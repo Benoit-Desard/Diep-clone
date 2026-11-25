@@ -9,19 +9,19 @@
   <div id="hud" class="hidden" aria-live="polite">
     <header class="topbar"><div class="brand">DIEP<span>.LAN</span></div><div id="connection">EN LIGNE</div><div class="modeBadge" id="modeBadge">FFA</div></header>
     <section id="leaderboard" class="glass"><h2>CLASSEMENT</h2><ol id="lbList"></ol></section>
-    <section id="classPick" class="glass hidden"><h2>ÉVOLUTION DISPONIBLE</h2><div id="classChoices"></div></section>
+    <section id="classPick" class="glass hidden" aria-label="Choix d'évolution"><h2>ÉVOLUTION DISPONIBLE</h2><div id="classChoices"></div></section>
     <section id="skillsWrap" class="glass"><div id="skillPts"></div><div id="skills"></div></section>
-    <canvas id="minimap" width="180" height="180"></canvas>
-    <section id="bottom"><div class="vitals"><span id="levelInfo">Niveau 1 · Tank</span><span id="scoreText">0 XP</span></div><div id="xpBar"><div id="xpFill"></div></div><div id="hpBar"><div id="hpFill"></div></div></section>
+    <canvas id="minimap" width="180" height="180" aria-label="Mini-carte"></canvas>
+    <section id="bottom"><div class="vitals"><span id="levelInfo">Niveau 1 · Basic Tank</span><span id="scoreText">0 XP</span></div><div id="xpBar"><div id="xpFill"></div></div><div id="hpBar"><div id="hpFill"></div></div></section>
     <div id="toast" class="hidden"></div>
   </div>
   <main id="menu" class="overlay"><section class="panel">
-    <div class="eyebrow">ARENA MULTIJOUEUR LOCAL</div><h1>DIEP<span>.LAN</span></h1><p class="lead">Grandis. Évolue. Domine l’arène.</p>
+    <div class="eyebrow">ARÈNE MULTIJOUEUR LOCALE</div><h1>DIEP<span>.LAN</span></h1><p class="lead">Grandis. Évolue. Domine l’arène.</p>
     <label for="nameInput">PSEUDO</label><input id="nameInput" maxlength="15" placeholder="Ton pseudo" autocomplete="off" spellcheck="false">
     <label for="modeSelect">MODE DE JEU</label><select id="modeSelect"><option value="ffa">Chacun pour soi (FFA)</option><option value="teams">Équipes — Bleu contre Rouge</option></select>
     <button id="playBtn" disabled>Connexion…</button><p id="status">Connexion au serveur…</p>
-    <p class="hint"><b>ZQSD / WASD / flèches</b> bouger · <b>souris</b> viser · <b>clic gauche / espace</b> tirer · <b>clic droit</b> capacité · <b>1–8</b> compétences</p>
-    <p class="hint small">Niveaux 15, 30 et 45 : choisis une évolution. F5 ou rejouer après une élimination.</p>
+    <p class="hint"><b>ZQSD / WASD / flèches</b> bouger · <b>souris</b> viser · <b>clic gauche / espace</b> tirer · <b>clic droit</b> pièges · <b>1–8</b> compétences</p>
+    <p class="hint small">Évolutions aux niveaux 15, 30 et 45 selon votre classe. Chaque palier est un choix définitif.</p>
   </section></main>
   <script src="client.js" defer></script>
 </body>
