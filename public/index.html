@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Diep.LAN</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="leaderboard">
+      <h3>Classement</h3>
+      <ol id="lbList"></ol>
+    </div>
+
+    <div id="classPick" class="hidden">
+      <h3>Choisis ta classe</h3>
+      <button data-c="1">Twin</button>
+      <button data-c="2">Sniper</button>
+      <button data-c="3">Machine Gun</button>
+    </div>
+
+    <div id="skillsWrap">
+      <div id="skillPts"></div>
+      <div id="skills"></div>
+    </div>
+
+    <canvas id="minimap" width="150" height="150"></canvas>
+
+    <div id="bottom">
+      <div id="levelInfo"></div>
+      <div id="xpBar"><div id="xpFill"></div></div>
+      <div id="scoreText"></div>
+    </div>
+  </div>
+
+  <div id="menu" class="overlay">
+    <div class="panel">
+      <h1>DIEP<span>.LAN</span></h1>
+      <p id="menuInfo"></p>
+      <input id="nameInput" type="text" maxlength="15" placeholder="Ton pseudo" autocomplete="off" spellcheck="false" autofocus>
+      <button id="playBtn" disabled>Jouer</button>
+      <p id="status">Connexion au serveur…</p>
+      <p class="hint">ZQSD / WASD / flèches pour bouger · souris pour viser · clic ou espace pour tirer · touches 1 à 8 pour les compétences</p>
+    </div>
+  </div>
+
+  <script src="client.js"></script>
+</body>
+</html>
