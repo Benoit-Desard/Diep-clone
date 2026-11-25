@@ -1,52 +1,28 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="fr">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Diep.LAN</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="theme-color" content="#101722"><title>Diep.LAN — Arène multijoueur</title><link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <canvas id="game"></canvas>
-
-  <div id="hud" class="hidden">
-    <div id="leaderboard">
-      <h3>Classement</h3>
-      <ol id="lbList"></ol>
-    </div>
-
-    <div id="classPick" class="hidden">
-      <h3>Choisis ta classe</h3>
-      <button data-c="1">Twin</button>
-      <button data-c="2">Sniper</button>
-      <button data-c="3">Machine Gun</button>
-    </div>
-
-    <div id="skillsWrap">
-      <div id="skillPts"></div>
-      <div id="skills"></div>
-    </div>
-
-    <canvas id="minimap" width="150" height="150"></canvas>
-
-    <div id="bottom">
-      <div id="levelInfo"></div>
-      <div id="xpBar"><div id="xpFill"></div></div>
-      <div id="scoreText"></div>
-    </div>
+  <canvas id="game" aria-label="Arène de jeu"></canvas>
+  <div id="hud" class="hidden" aria-live="polite">
+    <header class="topbar"><div class="brand">DIEP<span>.LAN</span></div><div id="connection">EN LIGNE</div><div class="modeBadge" id="modeBadge">FFA</div></header>
+    <section id="leaderboard" class="glass"><h2>CLASSEMENT</h2><ol id="lbList"></ol></section>
+    <section id="classPick" class="glass hidden"><h2>ÉVOLUTION DISPONIBLE</h2><div id="classChoices"></div></section>
+    <section id="skillsWrap" class="glass"><div id="skillPts"></div><div id="skills"></div></section>
+    <canvas id="minimap" width="180" height="180"></canvas>
+    <section id="bottom"><div class="vitals"><span id="levelInfo">Niveau 1 · Tank</span><span id="scoreText">0 XP</span></div><div id="xpBar"><div id="xpFill"></div></div><div id="hpBar"><div id="hpFill"></div></div></section>
+    <div id="toast" class="hidden"></div>
   </div>
-
-  <div id="menu" class="overlay">
-    <div class="panel">
-      <h1>DIEP<span>.LAN</span></h1>
-      <p id="menuInfo"></p>
-      <input id="nameInput" type="text" maxlength="15" placeholder="Ton pseudo" autocomplete="off" spellcheck="false" autofocus>
-      <button id="playBtn" disabled>Jouer</button>
-      <p id="status">Connexion au serveur…</p>
-      <p class="hint">ZQSD / WASD / flèches pour bouger · souris pour viser · clic ou espace pour tirer · touches 1 à 8 pour les compétences</p>
-    </div>
-  </div>
-
-  <script src="client.js"></script>
+  <main id="menu" class="overlay"><section class="panel">
+    <div class="eyebrow">ARENA MULTIJOUEUR LOCAL</div><h1>DIEP<span>.LAN</span></h1><p class="lead">Grandis. Évolue. Domine l’arène.</p>
+    <label for="nameInput">PSEUDO</label><input id="nameInput" maxlength="15" placeholder="Ton pseudo" autocomplete="off" spellcheck="false">
+    <label for="modeSelect">MODE DE JEU</label><select id="modeSelect"><option value="ffa">Chacun pour soi (FFA)</option><option value="teams">Équipes — Bleu contre Rouge</option></select>
+    <button id="playBtn" disabled>Connexion…</button><p id="status">Connexion au serveur…</p>
+    <p class="hint"><b>ZQSD / WASD / flèches</b> bouger · <b>souris</b> viser · <b>clic gauche / espace</b> tirer · <b>clic droit</b> capacité · <b>1–8</b> compétences</p>
+    <p class="hint small">Niveaux 15, 30 et 45 : choisis une évolution. F5 ou rejouer après une élimination.</p>
+  </section></main>
+  <script src="client.js" defer></script>
 </body>
 </html>
