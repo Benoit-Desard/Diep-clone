@@ -1,27 +1,455 @@
 'use strict';
+
 (() => {
-  const $=id=>document.getElementById(id), canvas=$('game'),ctx=canvas.getContext('2d',{alpha:false}),menu=$('menu'),hud=$('hud'),playBtn=$('playBtn'),status=$('status'),nameInput=$('nameInput'),choices=$('classChoices');
-  const names=['Basic Tank','Twin','Sniper','Machine Gun','Flank Guard','Triplet','Quad Tank','Twin Flank','Assassin','Overseer','Trapper','Destroyer','Gunner','Tri-Angle','Ranger','Stalker','Overlord','Manager','Annihilator','Hybrid','Fighter','Booster'];
-  const classes={0:[0],1:[-.035,.035],2:[0],3:[0],4:[0,Math.PI],5:[-.12,0,.12],6:[0,Math.PI/2,Math.PI,Math.PI*1.5],7:[0,.05,Math.PI,Math.PI+.05],8:[0],9:[],10:[0],11:[0],12:[-.16,-.05,.05,.16],13:[0,2.55,3.73],14:[0],15:[0],16:[],17:[],18:[0],19:[0],20:[0,2.55,3.73],21:[0,2.45,3.83]};
-  const stats=['Régénération','PV max','Dégâts corporels','Vitesse des balles','Pénétration','Dégâts des balles','Rechargement','Vitesse'],colors=['#f2ad8f','#e276db','#a084f3','#72a8f4','#f2dc63','#f17979','#a7e86c','#68d7d2'];
-  let ws=null,myId=0,world=4000,playing=false,mode='ffa',meState=null,snaps=[],clockOffset=null,W=0,H=0,dpr=1,scale=1,lastInput='',lastSent=0,fire=false,ability=false,hudSig='';const cam={x:2000,y:2000},keys=new Set(),mouse={x:innerWidth/2,y:innerHeight/2};
-  function send(o){if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(o))}
-  function connect(){const proto=location.protocol==='https:'?'wss:':'ws:';ws=new WebSocket(`${proto}//${location.hostname||'localhost'}:${new URLSearchParams(location.search).get('wsPort')||8080}`);ws.onopen=()=>{status.textContent='Serveur LAN connecté';playBtn.disabled=false;playBtn.textContent='JOUER'};ws.onclose=()=>{playing=false;hud.classList.add('hidden');menu.classList.remove('hidden');playBtn.disabled=true;status.textContent='Connexion perdue — nouvelle tentative';setTimeout(connect,1800)};ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}handle(m)}}
-  function handle(m){if(m.t==='sp'){myId=m.id;world=m.w;mode=m.mode||'ffa';snaps=[];clockOffset=null;playing=true;meState=null;menu.classList.add('hidden');hud.classList.remove('hidden');$('modeBadge').textContent=mode==='teams'?'ÉQUIPES':'FFA';return}if(m.t==='d'){playing=false;hud.classList.add('hidden');menu.classList.remove('hidden');status.textContent=`Détruit par ${m.k||'un ennemi'} — niveau ${m.l||1}`;playBtn.textContent='REJOUER';return}if(m.t!=='u')return;const ents=new Map(m.e.map(e=>[e.i,e])),offset=performance.now()-m.ts;clockOffset=clockOffset===null||offset<clockOffset?offset:clockOffset+(offset-clockOffset)*.02;snaps.push({t:m.ts,ents});if(snaps.length>10)snaps.shift();meState=m.me;renderHud(m.lb);}
-  function join(){if(!ws||ws.readyState!==1)return;send({t:'j',n:nameInput.value,m:$('modeSelect').value})}playBtn.onclick=join;nameInput.onkeydown=e=>{if(e.key==='Enter'&&!playBtn.disabled)join()};try{nameInput.value=localStorage.getItem('diep-name')||'';nameInput.addEventListener('change',()=>localStorage.setItem('diep-name',nameInput.value))}catch{}
-  function renderHud(lb=[]){const m=meState;if(!m)return;const sig=[m.lv,m.xp,m.pt,m.st.join(),m.c,(m.cc||[]).map(x=>x.id).join()].join('|');if(sig===hudSig)return;hudSig=sig;
-    $('levelInfo').textContent=`Niveau ${m.lv} · ${names[m.c]||'Tank'}`;$('scoreText').textContent=`${m.xp} XP`;$('xpFill').style.width=`${Math.max(0,Math.min(100,(m.xp-m.lo)/Math.max(1,m.nx-m.lo)*100))}%`;$('hpFill').style.width=`${Math.max(0,Math.min(100,m.hp/m.mh*100))}%`;
-    $('skillPts').textContent=m.pt?`${m.pt} point${m.pt===1?'':'s'} disponible${m.pt===1?'':'s'}`:'COMPÉTENCES';$('skills').textContent='';stats.forEach((s,i)=>{const row=document.createElement('div');row.className='skill';row.style.setProperty('--c',colors[i]);const label=document.createElement('span');label.textContent=s;const bar=document.createElement('div');bar.className='skillBar';const fill=document.createElement('i');fill.style.width=`${m.st[i]/7*100}%`;bar.append(fill);const b=document.createElement('button');b.textContent='+';b.disabled=!m.pt||m.st[i]>=7;b.onclick=()=>send({t:'s',i});row.append(label,bar,b);$('skills').append(row)});
-    choices.textContent='';const available=m.cc||[];$('classPick').classList.toggle('hidden',available.length===0);if(available.length){$('classPick').querySelector('h2').textContent=`ÉVOLUTION — NIVEAU ${available[0].level}`;available.forEach(c=>{const b=document.createElement('button');b.className='classChoice';b.setAttribute('aria-label',`Choisir ${c.name}`);const icon=document.createElement('canvas');icon.width=54;icon.height=42;icon.className='classIcon';drawPreview(icon.getContext('2d'),c.id);const copy=document.createElement('span');copy.innerHTML=`<span>${escapeHtml(c.name)}</span><small>PALIER ${c.level}</small>`;b.append(icon,copy);b.onclick=()=>send({t:'c',c:c.id});choices.append(b)})}
-    const ol=$('lbList');ol.textContent='';for(const [n,xp,id] of lb||[]){const li=document.createElement('li');li.textContent=`${n} · ${xp}`;if(id===myId)li.className='me';ol.append(li)}
+  // ------------------------------------------------------------------ constantes
+  const WS_PORT = 8080;
+  const INTERP_DELAY = 90;               // ms de retard volontaire pour interpoler entre 2 snapshots
+  const VIEW_W = 1920, VIEW_H = 1080;    // zone visible de référence (doit correspondre au serveur)
+  const GRID_STEP = 50;
+
+  const BLUE = { fill: '#00b2e1', stroke: '#0085a8' };
+  const RED = { fill: '#f14e54', stroke: '#b43a3f' };
+  const BARREL = { fill: '#999999', stroke: '#727272' };
+  // k : échelle de dessin par rapport au rayon de collision serveur
+  const SHAPES = {
+    2: { sides: 4, k: 1.2, fill: '#ffe869', stroke: '#bfae4e' },
+    3: { sides: 3, k: 1.1, fill: '#fc7677', stroke: '#bd5758' },
+    4: { sides: 5, k: 1.05, fill: '#768dfc', stroke: '#5869bd' },
+  };
+  const STAT_NAMES = ['Régénération', 'PV max', 'Dégâts corporels', 'Vitesse des balles',
+    'Pénétration', 'Dégâts des balles', 'Rechargement', 'Vitesse de déplacement'];
+  const STAT_COLORS = ['#e5ad8e', '#e664e6', '#9a6df0', '#6d9bf0', '#f0e65f', '#f06d6d', '#8fe05c', '#5fe0e0'];
+  const CLASS_NAMES = ['Tank', 'Twin', 'Sniper', 'Machine Gun'];
+  const KEYMAP = {
+    KeyW: 1, ArrowUp: 1,       // KeyW = touche Z sur un clavier AZERTY
+    KeyS: 2, ArrowDown: 2,
+    KeyA: 4, ArrowLeft: 4,     // KeyA = touche Q sur un clavier AZERTY
+    KeyD: 8, ArrowRight: 8,
+  };
+
+  // ------------------------------------------------------------------ DOM
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('game'), ctx = canvas.getContext('2d');
+  const mm = $('minimap'), mctx = mm.getContext('2d');
+  const hud = $('hud'), menu = $('menu');
+  const nameInput = $('nameInput'), playBtn = $('playBtn');
+  const statusEl = $('status'), menuInfo = $('menuInfo');
+  const lbList = $('lbList'), classPick = $('classPick');
+  const skillsEl = $('skills'), skillPts = $('skillPts');
+  const xpFill = $('xpFill'), levelInfo = $('levelInfo'), scoreText = $('scoreText');
+
+  // ------------------------------------------------------------------ état
+  let ws = null;
+  let myId = 0;
+  let world = 4000;
+  let playing = false;
+  let snaps = [];            // [{t, ents: Map(id -> entité)}] (t = temps serveur en ms)
+  let clockOffset = null;    // estimation de (temps local - temps serveur)
+  let meState = null;        // dernier état personnel reçu (xp, niveau, stats...)
+  let hudSig = '';
+  let W = 0, H = 0, dpr = 1;
+  let scale = 0;
+  const cam = { x: 2000, y: 2000 };
+
+  const held = new Set();
+  const mouse = { x: innerWidth / 2, y: innerHeight / 2 };
+  let mouseDown = false, spaceDown = false;
+  let lastSig = '', lastSent = 0;
+
+  // ------------------------------------------------------------------ réseau
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
-  function escapeHtml(s){const el=document.createElement('span');el.textContent=s;return el.innerHTML}
-  function drawPreview(c,id){const r=13; c.save();c.translate(27,22);c.fillStyle='#9da4aa';c.strokeStyle='#687077';c.lineWidth=2;for(const a of classes[id]||[]){c.save();c.rotate(a);c.fillRect(0,-3,r,6);c.strokeRect(0,-3,r,6);c.restore()}c.beginPath();c.arc(0,0,r*.78,0,Math.PI*2);c.fillStyle='#35b9e9';c.fill();c.stroke();if([9,16,17].includes(id)){c.fillStyle='#d9e8ef';for(let i=0;i<(id===17?8:4);i++){const a=i*Math.PI*2/(id===17?8:4);c.beginPath();c.arc(Math.cos(a)*21,Math.sin(a)*21,2.5,0,7);c.fill()}}c.restore()}
-  const keysDown={KeyW:1,ArrowUp:1,KeyS:2,ArrowDown:2,KeyA:4,ArrowLeft:4,KeyD:8,ArrowRight:8};addEventListener('keydown',e=>{if(e.code==='Space'||keysDown[e.code])e.preventDefault();if(!playing)return;if(e.code==='Space')fire=true;else if(keysDown[e.code])keys.add(e.code);else{const n=/^(?:Digit|Numpad)([1-8])$/.exec(e.code);if(n)send({t:'s',i:+n[1]-1})}});addEventListener('keyup',e=>{keys.delete(e.code);if(e.code==='Space')fire=false});addEventListener('blur',()=>{keys.clear();fire=ability=false});addEventListener('mousemove',e=>{mouse.x=e.clientX;mouse.y=e.clientY});canvas.addEventListener('mousedown',e=>{if(e.button===0)fire=true;if(e.button===2)ability=true});addEventListener('mouseup',e=>{if(e.button===0)fire=false;if(e.button===2)ability=false});canvas.addEventListener('contextmenu',e=>e.preventDefault());
-  function keyMask(){let k=0;for(const c of keys)k|=keysDown[c]||0;return k}setInterval(()=>{if(!playing)return;const a=Math.atan2(mouse.y-H/2,mouse.x-W/2),k=keyMask(),s=`${k}|${a.toFixed(2)}|${fire?1:0}|${ability?1:0}`,now=performance.now();if(s!==lastInput||now-lastSent>200){send({t:'i',k,a,f:fire?1:0,b:ability?1:0});lastInput=s;lastSent=now}},1000/30);
-  function resize(){dpr=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr)}addEventListener('resize',resize);resize();
-  function sample(t){if(!snaps.length)return[];const s=snaps.at(-1);return [...s.ents.values()]}
-  function tank(t){const color=t.i===myId?'#35b9e9':t.team===1?'#32b9e8':t.team===2?'#fa7185':'#f27679',id=t.c||0,r=t.r||29;ctx.save();ctx.translate(t.x,t.y);ctx.rotate(t.a||0);ctx.fillStyle='#9da4aa';ctx.strokeStyle='#687077';ctx.lineWidth=3;for(const a of classes[id]||[]){ctx.save();ctx.rotate(a);const length=[2,8,14,15].includes(id)?2.4:1.75;ctx.fillRect(-r*.1,-r*.22,r*length,r*.44);ctx.strokeRect(-r*.1,-r*.22,r*length,r*.44);ctx.restore()}ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fillStyle=color;ctx.strokeStyle='#17202dcc';ctx.lineWidth=4;ctx.fill();ctx.stroke();ctx.restore();ctx.font='12px system-ui';ctx.textAlign='center';ctx.lineWidth=3;ctx.strokeStyle='#17202dcc';ctx.strokeText(t.n||'',t.x,t.y-r-8);ctx.fillStyle='white';ctx.fillText(t.n||'',t.x,t.y-r-8)}
-  function frame(){requestAnimationFrame(frame);ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#d7e1e4';ctx.fillRect(0,0,W,H);const es=sample(),me=es.find(e=>e.i===myId);if(me){cam.x=me.x;cam.y=me.y}const fov=meState?.fov||1;scale=Math.min(W/1920,H/1080)/fov;ctx.save();ctx.translate(W/2-cam.x*scale,H/2-cam.y*scale);ctx.scale(scale,scale);ctx.fillStyle='#d7e1e4';ctx.fillRect(0,0,world,world);ctx.strokeStyle='#58677522';ctx.lineWidth=1;for(let x=0;x<=world;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,world);ctx.stroke()}for(let y=0;y<=world;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(world,y);ctx.stroke()}for(const e of es){if(e.t===0)tank(e);else if(e.t===1){ctx.beginPath();ctx.arc(e.x,e.y,e.r||6,0,7);ctx.fillStyle='#ffe6ac';ctx.fill()}else if(e.t===7||e.t===8){ctx.beginPath();ctx.arc(e.x,e.y,e.r||10,0,7);ctx.fillStyle=e.t===7?'#e98b43':'#83a7bd';ctx.fill();ctx.strokeStyle='#263746';ctx.stroke()}else if(e.t>=2){const n={2:4,3:3,4:5,5:5,6:3}[e.t]||4;ctx.beginPath();for(let i=0;i<n;i++){const a=(e.a||0)+i*Math.PI*2/n;ctx.lineTo(e.x+Math.cos(a)*e.r,e.y+Math.sin(a)*e.r)}ctx.closePath();ctx.fillStyle={2:'#f5d458',3:'#f8797c',4:'#778cf7',5:'#b17cf5',6:'#fa535b'}[e.t]||'#e98b43';ctx.fill()}}ctx.restore();}
-  connect();requestAnimationFrame(frame);
+
+  function connect() {
+    ws = new WebSocket(`ws://${location.hostname || 'localhost'}:${WS_PORT}`);
+    ws.onopen = () => {
+      statusEl.textContent = 'Connecté au serveur';
+      playBtn.disabled = false;
+    };
+    ws.onclose = () => {
+      playing = false;
+      playBtn.disabled = true;
+      hud.classList.add('hidden');
+      menu.classList.remove('hidden');
+      menuInfo.textContent = '';
+      statusEl.textContent = 'Connexion perdue, nouvelle tentative…';
+      setTimeout(connect, 2000);
+    };
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch { return; }
+      handle(m);
+    };
+  }
+
+  function handle(m) {
+    switch (m.t) {
+      case 'sp':
+        myId = m.id;
+        world = m.w;
+        snaps = [];
+        clockOffset = null;
+        meState = null;
+        hudSig = '';
+        playing = true;
+        menu.classList.add('hidden');
+        hud.classList.remove('hidden');
+        break;
+      case 'u': {
+        const ents = new Map();
+        for (const e of m.e) ents.set(e.i, e);
+        const d = performance.now() - m.ts;
+        clockOffset = clockOffset === null || d < clockOffset ? d : clockOffset + (d - clockOffset) * 0.01;
+        snaps.push({ t: m.ts, ents });
+        if (snaps.length > 12) snaps.shift();
+        meState = m.me;
+        if (m.lb) renderLeaderboard(m.lb);
+        updateHud();
+        break;
+      }
+      case 'd':
+        playing = false;
+        held.clear();
+        mouseDown = spaceDown = false;
+        hud.classList.add('hidden');
+        menuInfo.textContent = `Détruit par ${m.k || 'un polygone'} · niveau ${m.l} · score ${m.s}`;
+        playBtn.textContent = 'Rejouer';
+        menu.classList.remove('hidden');
+        break;
+    }
+  }
+
+  // ------------------------------------------------------------------ inputs
+  function keyMask() {
+    let k = 0;
+    for (const code of held) k |= KEYMAP[code] || 0;
+    return k;
+  }
+
+  addEventListener('keydown', (e) => {
+    if (!playing) return;
+    if (e.code in KEYMAP || e.code === 'Space') e.preventDefault();
+    if (e.code in KEYMAP) held.add(e.code);
+    else if (e.code === 'Space') spaceDown = true;
+    else {
+      const d = /^(?:Digit|Numpad)([1-8])$/.exec(e.code);
+      if (d) send({ t: 's', i: Number(d[1]) - 1 });
+    }
+  });
+  addEventListener('keyup', (e) => {
+    held.delete(e.code);
+    if (e.code === 'Space') spaceDown = false;
+  });
+  addEventListener('blur', () => { held.clear(); mouseDown = spaceDown = false; });
+  addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; });
+  addEventListener('mousedown', (e) => { if (e.button === 0 && e.target === canvas) mouseDown = true; });
+  addEventListener('mouseup', (e) => { if (e.button === 0) mouseDown = false; });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Envoi des inputs à 30 Hz (uniquement s'ils changent, + un battement toutes les 250 ms)
+  setInterval(() => {
+    if (!playing) return;
+    const k = keyMask();
+    const a = Math.round(Math.atan2(mouse.y - H / 2, mouse.x - W / 2) * 100) / 100;
+    const f = mouseDown || spaceDown ? 1 : 0;
+    const sig = `${k}|${a}|${f}`;
+    const now = performance.now();
+    if (sig !== lastSig || now - lastSent > 250) {
+      send({ t: 'i', k, a, f });
+      lastSig = sig;
+      lastSent = now;
+    }
+  }, 1000 / 30);
+
+  // ------------------------------------------------------------------ menu
+  function play() {
+    const name = nameInput.value.trim();
+    try { localStorage.setItem('diep-name', name); } catch { /* ignoré */ }
+    send({ t: 'j', n: name });
+  }
+  playBtn.addEventListener('click', play);
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !playBtn.disabled) play(); });
+  try { nameInput.value = localStorage.getItem('diep-name') || ''; } catch { /* ignoré */ }
+
+  classPick.querySelectorAll('button').forEach((b) =>
+    b.addEventListener('click', () => send({ t: 'c', c: Number(b.dataset.c) })));
+
+  // ------------------------------------------------------------------ HUD
+  const skillRows = [];
+  STAT_NAMES.forEach((name, i) => {
+    const row = document.createElement('div');
+    row.className = 'skill';
+    row.style.setProperty('--c', STAT_COLORS[i]);
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl';
+    lbl.textContent = name;
+    const pips = document.createElement('div');
+    pips.className = 'pips';
+    const pipEls = [];
+    for (let j = 0; j < 7; j++) {
+      const p = document.createElement('span');
+      p.className = 'pip';
+      pips.appendChild(p);
+      pipEls.push(p);
+    }
+    const key = document.createElement('span');
+    key.className = 'key';
+    key.textContent = String(i + 1);
+    row.append(lbl, pips, key);
+    row.addEventListener('click', () => send({ t: 's', i }));
+    skillsEl.appendChild(row);
+    skillRows.push({ row, pips: pipEls });
+  });
+
+  function updateHud() {
+    const m = meState;
+    if (!m) return;
+    const sig = [m.lv, m.xp, m.pt, m.st.join(), m.c, m.cc].join('|');
+    if (sig === hudSig) return;
+    hudSig = sig;
+
+    const span = m.nx - m.lo;
+    const pct = span > 0 ? Math.min(1, Math.max(0, (m.xp - m.lo) / span)) : 1;
+    xpFill.style.width = `${(pct * 100).toFixed(1)}%`;
+    levelInfo.textContent = `Niveau ${m.lv} ${CLASS_NAMES[m.c]}`;
+    scoreText.textContent = `Score : ${m.xp}`;
+
+    skillsEl.classList.toggle('has-points', m.pt > 0);
+    skillPts.textContent = m.pt > 0 ? `Points disponibles : ${m.pt}` : '';
+    skillRows.forEach((r, i) => {
+      r.pips.forEach((p, j) => p.classList.toggle('on', j < m.st[i]));
+      r.row.classList.toggle('maxed', m.st[i] >= 7);
+    });
+    classPick.classList.toggle('hidden', !m.cc);
+  }
+
+  function renderLeaderboard(lb) {
+    lbList.textContent = '';
+    for (const [name, xp, id] of lb) {
+      const li = document.createElement('li');
+      li.textContent = `${name} — ${xp}`;
+      if (id === myId) li.className = 'me';
+      lbList.appendChild(li);
+    }
+  }
+
+  // ------------------------------------------------------------------ interpolation
+  function lerpAngle(a0, a1, k) {
+    const d = ((a1 - a0 + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+    return a0 + d * k;
+  }
+
+  /** Renvoie la liste des entités interpolées à l'instant serveur `rt`. */
+  function sample(rt) {
+    const n = snaps.length;
+    if (!n) return null;
+    if (rt <= snaps[0].t) return [...snaps[0].ents.values()];
+    if (rt >= snaps[n - 1].t) return [...snaps[n - 1].ents.values()];
+
+    let i = n - 2;
+    while (i > 0 && snaps[i].t > rt) i--;
+    const a = snaps[i], b = snaps[i + 1];
+    const k = (rt - a.t) / (b.t - a.t);
+
+    const out = [];
+    for (const [id, e1] of b.ents) {
+      const e0 = a.ents.get(id);
+      if (!e0) { out.push(e1); continue; }
+      const e = { ...e1, x: e0.x + (e1.x - e0.x) * k, y: e0.y + (e1.y - e0.y) * k };
+      if (e1.a !== undefined && e0.a !== undefined) e.a = lerpAngle(e0.a, e1.a, k);
+      out.push(e);
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ rendu
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = innerWidth;
+    H = innerHeight;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  function drawGrid(vw, vh) {
+    const x0 = Math.max(0, Math.floor((cam.x - vw / 2) / GRID_STEP) * GRID_STEP);
+    const x1 = Math.min(world, Math.ceil((cam.x + vw / 2) / GRID_STEP) * GRID_STEP);
+    const y0 = Math.max(0, Math.floor((cam.y - vh / 2) / GRID_STEP) * GRID_STEP);
+    const y1 = Math.min(world, Math.ceil((cam.y + vh / 2) / GRID_STEP) * GRID_STEP);
+    ctx.beginPath();
+    for (let x = x0; x <= x1; x += GRID_STEP) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    for (let y = y0; y <= y1; y += GRID_STEP) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+    ctx.stroke();
+  }
+
+  function drawPoly(x, y, r, a, sides) {
+    ctx.beginPath();
+    for (let i = 0; i < sides; i++) {
+      const ang = a + (i * 2 * Math.PI) / sides;
+      const px = x + Math.cos(ang) * r, py = y + Math.sin(ang) * r;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  }
+
+  function drawHpBar(x, y, w, pct) {
+    const h = 6, top = y;
+    ctx.fillStyle = 'rgba(40, 40, 40, 0.75)';
+    ctx.beginPath();
+    ctx.roundRect(x - w / 2 - 2, top - 2, w + 4, h + 4, 5);
+    ctx.fill();
+    ctx.fillStyle = '#85e37d';
+    ctx.beginPath();
+    ctx.roundRect(x - w / 2, top, Math.max(0, (w * pct) / 100), h, 3);
+    ctx.fill();
+  }
+
+  function drawShape(s) {
+    const st = SHAPES[s.t];
+    if (!st) return;
+    drawPoly(s.x, s.y, s.r * st.k, s.a || 0, st.sides);
+    ctx.fillStyle = st.fill;
+    ctx.strokeStyle = st.stroke;
+    ctx.lineWidth = 4;
+    ctx.lineJoin = 'round';
+    ctx.fill();
+    ctx.stroke();
+    if (s.hp < 100) drawHpBar(s.x, s.y + s.r * st.k + 10, s.r * 1.4, s.hp);
+  }
+
+  function drawBullet(b) {
+    const c = b.o === myId ? BLUE : RED;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fillStyle = c.fill;
+    ctx.strokeStyle = c.stroke;
+    ctx.lineWidth = 3;
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  function drawTank(t) {
+    const c = t.i === myId ? BLUE : RED;
+    const r = t.r;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(t.a || 0);
+    ctx.fillStyle = BARREL.fill;
+    ctx.strokeStyle = BARREL.stroke;
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
+    const rect = (x, y, w, h) => { ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); };
+    switch (t.c) {
+      case 1: // Twin
+        rect(0, -0.42 * r - 0.31 * r, 1.75 * r, 0.62 * r);
+        rect(0, 0.42 * r - 0.31 * r, 1.75 * r, 0.62 * r);
+        break;
+      case 2: // Sniper
+        rect(0, -0.375 * r, 2.3 * r, 0.75 * r);
+        break;
+      case 3: // Machine Gun : canon évasé
+        ctx.beginPath();
+        ctx.moveTo(0, -0.34 * r);
+        ctx.lineTo(1.7 * r, -0.58 * r);
+        ctx.lineTo(1.7 * r, 0.58 * r);
+        ctx.lineTo(0, 0.34 * r);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      default:
+        rect(0, -0.42 * r, 1.75 * r, 0.84 * r);
+    }
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = c.fill;
+    ctx.strokeStyle = c.stroke;
+    ctx.lineWidth = 4;
+    ctx.fill();
+    ctx.stroke();
+
+    if (t.n) {
+      ctx.font = 'bold 18px Ubuntu, "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.strokeText(t.n, t.x, t.y - r - 10);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(t.n, t.x, t.y - r - 10);
+    }
+    if (t.hp < 100) drawHpBar(t.x, t.y + r + 12, r * 1.6, t.hp);
+  }
+
+  function drawMinimap(tanks, vw, vh) {
+    const w = mm.width, k = w / world;
+    mctx.clearRect(0, 0, w, w);
+    mctx.fillStyle = 'rgba(205, 205, 205, 0.8)';
+    mctx.fillRect(0, 0, w, w);
+    mctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+    mctx.lineWidth = 1;
+    mctx.strokeRect((cam.x - vw / 2) * k, (cam.y - vh / 2) * k, vw * k, vh * k);
+    mctx.fillStyle = RED.fill;
+    for (const t of tanks) {
+      if (t.i === myId) continue;
+      mctx.beginPath();
+      mctx.arc(t.x * k, t.y * k, 2.5, 0, Math.PI * 2);
+      mctx.fill();
+    }
+    mctx.fillStyle = BLUE.fill;
+    mctx.beginPath();
+    mctx.arc(cam.x * k, cam.y * k, 3.5, 0, Math.PI * 2);
+    mctx.fill();
+  }
+
+  function frame() {
+    requestAnimationFrame(frame);
+
+    const ents = clockOffset === null ? null : sample(performance.now() - clockOffset - INTERP_DELAY);
+    const shapes = [], bullets = [], tanks = [];
+    let me = null;
+    if (ents) {
+      for (const e of ents) {
+        if (e.t === 0) { tanks.push(e); if (e.i === myId) me = e; }
+        else if (e.t === 1) bullets.push(e);
+        else shapes.push(e);
+      }
+    }
+    if (me) { cam.x = me.x; cam.y = me.y; }
+
+    const target = Math.max(W / VIEW_W, H / VIEW_H) / (meState ? meState.fv : 1);
+    scale = scale === 0 ? target : scale + (target - scale) * 0.1;
+    const vw = W / scale, vh = H / scale;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#b9b9b9';                       // zone hors arène
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(-cam.x, -cam.y);
+
+    ctx.fillStyle = '#cdcdcd';                       // arène
+    ctx.fillRect(0, 0, world, world);
+    drawGrid(vw, vh);
+
+    for (const s of shapes) drawShape(s);
+    for (const b of bullets) drawBullet(b);
+    for (const t of tanks) if (t !== me) drawTank(t);
+    if (me) drawTank(me);
+    ctx.restore();
+
+    if (playing) drawMinimap(tanks, vw, vh);
+  }
+  requestAnimationFrame(frame);
+
+  connect();
 })();
