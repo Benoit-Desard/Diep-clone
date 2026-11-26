@@ -137,6 +137,7 @@ class ComposerStaticInitf5c2a8d7155bc5deaa13ed54e20a8a83
         'DateMalformedStringException' => __DIR__ . '/..' . '/symfony/polyfill-php83/Resources/stubs/DateMalformedStringException.php',
         'DateObjectError' => __DIR__ . '/..' . '/symfony/polyfill-php83/Resources/stubs/DateObjectError.php',
         'DateRangeError' => __DIR__ . '/..' . '/symfony/polyfill-php83/Resources/stubs/DateRangeError.php',
+        'Diep\\ClassTree' => __DIR__ . '/../..' . '/src/ClassTree.php',
         'Diep\\GameEngine' => __DIR__ . '/../..' . '/src/GameEngine.php',
         'Diep\\GameServer' => __DIR__ . '/../..' . '/src/GameServer.php',
         'Evenement\\EventEmitter' => __DIR__ . '/..' . '/evenement/evenement/src/EventEmitter.php',

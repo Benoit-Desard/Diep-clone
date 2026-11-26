@@ -12,14 +12,8 @@
   <div id="hud" class="hidden">
     <div id="leaderboard">
       <h3>Classement</h3>
+      <div id="teamScore" class="hidden"><span id="tsBlue"></span><span id="tsRed"></span></div>
       <ol id="lbList"></ol>
-    </div>
-
-    <div id="classPick" class="hidden">
-      <h3>Choisis ta classe</h3>
-      <button data-c="1">Twin</button>
-      <button data-c="2">Sniper</button>
-      <button data-c="3">Machine Gun</button>
     </div>
 
     <div id="skillsWrap">
@@ -34,16 +28,35 @@
       <div id="xpBar"><div id="xpFill"></div></div>
       <div id="scoreText"></div>
     </div>
+
+    <button id="evoBtn" class="hidden" type="button">Évolution disponible · T</button>
+    <div id="toast" class="hidden"></div>
+    <div id="keysHint">T arbre · C rotation auto · M son · clic droit / Maj : drones, pièges, zoom</div>
   </div>
 
+  <!-- Arbre d'évolution circulaire -->
+  <div id="tree" class="hidden">
+    <div class="treePanel">
+      <button id="treeClose" type="button" aria-label="Fermer">✕</button>
+      <h2>Arbre d'évolution</h2>
+      <canvas id="treeCanvas" width="760" height="760"></canvas>
+      <div id="treeTip" class="hidden"></div>
+    </div>
+  </div>
+
+  <!-- Accueil / écran de mort -->
   <div id="menu" class="overlay">
     <div class="panel">
       <h1>DIEP<span>.LAN</span></h1>
       <p id="menuInfo"></p>
       <input id="nameInput" type="text" maxlength="15" placeholder="Ton pseudo" autocomplete="off" spellcheck="false" autofocus>
-      <button id="playBtn" disabled>Jouer</button>
+      <div id="modeSel">
+        <button type="button" class="mode on" data-mode="ffa">Chacun pour soi</button>
+        <button type="button" class="mode" data-mode="teams">Équipes (Bleu vs Rouge)</button>
+      </div>
+      <button id="playBtn" type="button" disabled>Jouer</button>
       <p id="status">Connexion au serveur…</p>
-      <p class="hint">ZQSD / WASD / flèches pour bouger · souris pour viser · clic ou espace pour tirer · touches 1 à 8 pour les compétences</p>
+      <p class="hint">ZQSD / WASD / flèches · souris pour viser · clic gauche ou espace : tirer · clic droit ou Maj : action spéciale · 1-8 : compétences</p>
     </div>
   </div>
 

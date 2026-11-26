@@ -17,6 +17,7 @@ return array(
     'DateMalformedStringException' => $vendorDir . '/symfony/polyfill-php83/Resources/stubs/DateMalformedStringException.php',
     'DateObjectError' => $vendorDir . '/symfony/polyfill-php83/Resources/stubs/DateObjectError.php',
     'DateRangeError' => $vendorDir . '/symfony/polyfill-php83/Resources/stubs/DateRangeError.php',
+    'Diep\\ClassTree' => $baseDir . '/src/ClassTree.php',
     'Diep\\GameEngine' => $baseDir . '/src/GameEngine.php',
     'Diep\\GameServer' => $baseDir . '/src/GameServer.php',
     'Evenement\\EventEmitter' => $vendorDir . '/evenement/evenement/src/EventEmitter.php',
