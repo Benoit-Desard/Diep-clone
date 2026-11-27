@@ -18,6 +18,10 @@ namespace Diep;
 final class ClassTree
 {
     private static ?array $cache = null;
+    /** @var array<string,array<string,mixed>> classes fusionnées déjà calculées ("a:b" => définition) */
+    private static array $fusedCache = [];
+    private const FUSION_RATIO = 0.5;  // part de l'écart comblée par la 2e classe quand elle est meilleure que la 1re
+    private const FUSION_CAP = 1.8;    // gain maximal par caractéristique (x1,8)
 
     /** @return array<int,array<string,mixed>> classes indexées par id (0..53) */
     public static function all(): array
@@ -31,6 +35,61 @@ final class ClassTree
         return self::all()[$id] ?? self::all()[0];
     }
 
+    /**
+     * Seconde évolution (niveau 100) : fusion de deux classes.
+     *  - 1re classe (ancre) : ses canons, son profil et ses caractéristiques de base.
+     *  - 2e classe : améliore chaque caractéristique de la 1re de 50 % de l'écart quand elle est meilleure
+     *    (portée, vitesse, pénétration, vision, dégâts, cadence...), plafonné à x1,8 ; jamais de pénalité.
+     *    Elle apporte aussi ses capacités spéciales : spawners de drones, lanceurs de pièges, tourelles auto,
+     *    missiles, nécromancie, furtivité, zoom. Si la 1re classe n'a aucun canon (Smasher...), elle prend ceux de la 2e.
+     * Exemple : Machine Gun + Sniper = canon de mitrailleuse (cadence conservée) à la portée, la vitesse et la vision accrues.
+     *
+     * @return array<string,mixed> définition complète, utilisable comme n'importe quelle classe
+     */
+    public static function fused(int $a, int $b): array
+    {
+        return self::$fusedCache[$a . ':' . $b] ??= self::fuse(self::get($a), self::get($b));
+    }
+
+    /** Caractéristique de la 1re classe améliorée de FUSION_RATIO de l'écart avec la 2e (si elle est meilleure). */
+    private static function blend(float $p, float $s, bool $higherIsBetter): float
+    {
+        if ($higherIsBetter) {
+            return $s <= $p ? $p : min($p + self::FUSION_RATIO * ($s - $p), $p * self::FUSION_CAP);
+        }
+        return $s >= $p ? $p : max($p + self::FUSION_RATIO * ($s - $p), $p / self::FUSION_CAP);
+    }
+
+    /** @return array<string,mixed> */
+    private static function fuse(array $p, array $s): array
+    {
+        $out = $p;
+        $out['n'] = $p['n'] . ' + ' . $s['n'];
+        $out['ds'] = 'Fusion : canons de ' . $p['n'] . ', caractéristiques et capacités de ' . $s['n'] . '.';
+
+        // Canons : ceux de la 1re classe + les capacités spéciales de la 2e (ou tous ses canons si la 1re n'en a pas)
+        $hasWeapon = array_filter($p['bar'], static fn (array $b): bool => $b['k'] !== 'n') !== [];
+        $extra = $hasWeapon
+            ? array_values(array_filter($s['bar'], static fn (array $b): bool => in_array($b['k'], ['d', 't', 'a', 'm', 'f'], true)
+                || ($b['k'] === 'n' && $s['nec'] === 1)))
+            : $s['bar'];
+        $out['bar'] = array_merge($p['bar'], $extra);
+
+        foreach (['dm', 'sp', 'pn', 'lf', 'bh', 'fov', 'mv', 'bd', 'hp'] as $k) {
+            $out[$k] = self::blend((float) $p[$k], (float) $s[$k], true);
+        }
+        foreach (['rl', 'sd', 'rc'] as $k) {
+            $out[$k] = self::blend((float) $p[$k], (float) $s[$k], false);
+        }
+        foreach (['rad', 'dc', 'dcs', 'shk', 'th', 'nec', 'zm', 'tsp', 'mxb', 'mxg'] as $k) {
+            $out[$k] = max($p[$k], $s[$k]);
+        }
+        $stealth = array_filter([$p['st'], $s['st']]);
+        $out['st'] = $stealth ? min($stealth) : 0;
+        $out['body'] = $p['body'] ?: $s['body'];
+        return $out;
+    }
+
     public static function has(int $id): bool
     {
         return isset(self::all()[$id]);
@@ -40,7 +99,7 @@ final class ClassTree
     {
         return $o + [
             'k' => 'b', 'l' => 1.75, 'w' => 0.84, 'o' => 0.0, 'a' => 0.0, 'd' => 0.0, 'fl' => 0.0,
-            'dm' => 1.0, 'sp' => 1.0, 'sz' => 1.0, 'sd' => 0.0, 'rl' => 1.0, 'rc' => 1.0, 'n' => 1,
+            'dm' => 1.0, 'sp' => 1.0, 'sz' => 1.0, 'sd' => 0.0, 'rl' => 1.0, 'rc' => 1.0, 'n' => 1, 'bh' => 1.0,
             'tg' => 0, 'au' => 0, 'dk' => 0, 'lf' => 1.0, 'pn' => 1.0,
             'ra' => 0.0, 'an' => 0.0, 'ro' => 0, 'rg' => 480.0,
         ];
@@ -78,7 +137,7 @@ final class ClassTree
             'rl' => 1.0, 'dm' => 1.0, 'sp' => 1.0, 'pn' => 1.0, 'lf' => 1.0, 'sd' => 0.0, 'rc' => 45.0,
             'fov' => 1.0, 'mv' => 1.0, 'bd' => 1.0, 'hp' => 1.0, 'rad' => 1.0,
             'dc' => 0, 'dcs' => 0, 'shk' => 0.0, 'th' => 0, 'st' => 0, 'body' => 0, 'nec' => 0,
-            'mxb' => 7, 'mxg' => 7, 'zm' => 0, 'tsp' => 0.0,
+            'mxb' => 7, 'mxg' => 7, 'zm' => 0, 'tsp' => 0.0, 'bh' => 1.0,
         ];
     }
 
@@ -139,8 +198,8 @@ final class ClassTree
             ['rl' => 2.3, 'rc' => 90.0, 'sp' => 1.15, 'shk' => 0.3]);
         $d[15] = self::c('Tri-Angle', 'Canons arrière en propulseurs : accélère en tirant.', 30, [4],
             [self::b(['l' => 1.8, 'w' => 0.78, 'dm' => 0.85]),
-             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P - 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4]),
-             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P + 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4])],
+             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P - 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4, 'bh' => 0.4]),
+             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P + 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4, 'bh' => 0.4])],
             ['mv' => 1.15, 'th' => 1, 'rc' => 40.0]);
         $d[16] = self::c('Auto 3', 'Trois tourelles automatiques sur un anneau rotatif.', 30, [4],
             [self::auto(['ra' => 0.78, 'an' => 0.0, 'ro' => 1]),
@@ -284,17 +343,17 @@ final class ClassTree
             ['rl' => 0.45, 'rc' => 22.0, 'pn' => 0.9]);
         $d[48] = self::c('Booster', 'Quatre propulseurs arrière : vitesse de pointe.', 45, [15],
             [self::b(['l' => 1.8, 'w' => 0.78, 'dm' => 0.85]),
-             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P - 0.35, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.8]),
-             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P + 0.35, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.8]),
-             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P - 0.8, 'dm' => 0.2, 'd' => 0.0, 'rc' => 2.8]),
-             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P + 0.8, 'dm' => 0.2, 'd' => 0.0, 'rc' => 2.8])],
+             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P - 0.35, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.8, 'bh' => 0.4]),
+             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P + 0.35, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.8, 'bh' => 0.4]),
+             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P - 0.8, 'dm' => 0.2, 'd' => 0.0, 'rc' => 2.8, 'bh' => 0.4]),
+             self::b(['l' => 1.4, 'w' => 0.55, 'a' => $P + 0.8, 'dm' => 0.2, 'd' => 0.0, 'rc' => 2.8, 'bh' => 0.4])],
             ['mv' => 1.25, 'th' => 1, 'rc' => 40.0]);
         $d[49] = self::c('Fighter', 'Tri-Angle avec deux canons latéraux.', 45, [15],
             [self::b(['l' => 1.8, 'w' => 0.78, 'dm' => 0.85]),
              self::b(['l' => 1.5, 'w' => 0.6, 'a' => $P / 2, 'dm' => 0.55, 'd' => 0.25]),
              self::b(['l' => 1.5, 'w' => 0.6, 'a' => -$P / 2, 'dm' => 0.55, 'd' => 0.75]),
-             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P - 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4]),
-             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P + 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4])],
+             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P - 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4, 'bh' => 0.4]),
+             self::b(['l' => 1.4, 'w' => 0.6, 'a' => $P + 0.55, 'dm' => 0.2, 'd' => 0.5, 'rc' => 2.4, 'bh' => 0.4])],
             ['mv' => 1.2, 'th' => 1, 'rc' => 40.0]);
         $d[50] = self::c('Landmine', 'Smasher invisible après 13 s d\'immobilité.', 45, [17], [],
             ['bd' => 3.0, 'hp' => 1.3, 'rad' => 1.15, 'mv' => 1.08, 'body' => 3, 'mxb' => 10, 'mxg' => 0, 'fov' => 1.4, 'st' => 390]);
@@ -305,6 +364,19 @@ final class ClassTree
             ['bd' => 4.5, 'hp' => 1.7, 'rad' => 1.2, 'mv' => 1.0, 'body' => 2, 'mxb' => 10, 'mxg' => 0, 'fov' => 1.4]);
         $d[53] = self::c('Auto Tank', 'Tank de base + tourelle automatique de soutien.', 45, [0],
             [self::b(), self::auto()]);
+
+        // Robustesse des balles ('bh') : durabilité = 2 x pénétration x bh. Quand deux balles ennemies se percutent,
+        // chacune perd (dégâts de l'autre x 0,15) de durabilité. > 1 : balles qui résistent et détruisent les
+        // balles adverses (snipers, destroyers) ; < 1 : cadence élevée mais balles fragiles (mitrailleuses, jumeaux).
+        $bh = [
+            1 => 0.8, 2 => 2.0, 3 => 0.5, 5 => 0.7, 6 => 0.8, 7 => 0.8, 8 => 2.5, 10 => 1.8, 12 => 6.0, 13 => 0.4,
+            14 => 0.35, 15 => 0.8, 16 => 0.6, 18 => 0.6, 19 => 0.5, 20 => 0.4, 21 => 0.6, 22 => 0.6, 23 => 0.7,
+            25 => 3.0, 26 => 2.2, 32 => 2.0, 33 => 0.4, 35 => 0.6, 36 => 1.5, 38 => 6.0, 39 => 8.0, 40 => 4.0,
+            41 => 3.0, 42 => 3.0, 43 => 2.5, 44 => 0.4, 45 => 0.3, 46 => 0.35, 47 => 0.5, 48 => 0.8, 49 => 0.8,
+        ];
+        foreach ($bh as $id => $v) {
+            $d[$id]['bh'] = $v;
+        }
 
         // Liens enfants
         foreach ($d as $id => $def) {

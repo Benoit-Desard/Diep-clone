@@ -22,6 +22,7 @@
     6: { sides: 3, k: 1.15, fill: '#f177dd', stroke: '#b85aa5' },  // Crasher
   };
   const SHAPE_R = { 2: 24, 3: 26, 4: 44, 5: 135, 6: 16 };   // rayons des polygones (non envoyés par le serveur)
+  const TIER_NAMES = { 1: 'Débutants', 2: 'Évolués', 3: 'Maîtres' };
   const STAT_NAMES = ['Régénération', 'PV max', 'Dégâts corporels', 'Vitesse des balles',
     'Pénétration', 'Dégâts des balles', 'Rechargement', 'Vitesse de déplacement'];
   const STAT_COLORS = ['#e5ad8e', '#e664e6', '#9a6df0', '#6d9bf0', '#f0e65f', '#f06d6d', '#8fe05c', '#5fe0e0'];
@@ -43,8 +44,9 @@
   const lbList = $('lbList'), teamScore = $('teamScore');
   const skillsEl = $('skills'), skillPts = $('skillPts');
   const xpFill = $('xpFill'), levelInfo = $('levelInfo'), scoreText = $('scoreText');
-  const evoBtn = $('evoBtn'), toastEl = $('toast');
-  const treeEl = $('tree'), treeCanvas = $('treeCanvas'), tctx = treeCanvas.getContext('2d'), treeTip = $('treeTip');
+  const evoBtn = $('evoBtn'), toastEl = $('toast'), superBtn = $('superBtn'), busyBadge = $('busyBadge');
+  const superPanel = $('superPanel'), superGrid = $('superGrid'), superCount = $('superCount'), superOk = $('superOk');
+  const treeEl = $('tree'), treeCanvas = $('treeCanvas'), tctx = treeCanvas.getContext('2d'), treeTip = $('treeTip'), treeMsg = $('treeMsg');
 
   // ==================================================================== état
   let ws = null;
@@ -64,6 +66,7 @@
   const mouse = { x: innerWidth / 2, y: innerHeight / 2 };
   let mouseDown = false, rmbDown = false, spaceDown = false, shiftDown = false;
   let lastSig = '', lastSent = 0, toastTimer = 0;
+  let overSkills = false, choiceUntil = 0;   // interaction avec le panneau de compétences (immunité côté serveur)
 
   // ==================================================================== audio procédural (Web Audio)
   const Sfx = (() => {
@@ -150,6 +153,27 @@
     };
   })();
 
+  // ==================================================================== classes fusionnées (niveau 100)
+  const WEAPON_K = ['b', 'm', 'f', 't', 'd', 'a'], SPECIAL_K = ['d', 't', 'a', 'm', 'f'];
+  const fuseCache = new Map();
+  /** Classe réellement jouée par (c, c2) : miroir du serveur pour le rendu (canons, corps, propulseurs, drones). */
+  function clsOf(c, c2) {
+    if (c2 === undefined || c2 < 0) return classes[c] || classes[0];
+    const key = c * 1000 + c2;
+    let d = fuseCache.get(key);
+    if (!d) {
+      const A = classes[c], B = classes[c2];
+      const hasWeapon = A.bar.some((b) => WEAPON_K.includes(b.k));
+      const extra = hasWeapon ? B.bar.filter((b) => SPECIAL_K.includes(b.k) || (b.k === 'n' && B.nec === 1)) : B.bar;
+      d = {
+        ...A, n: `${A.n} + ${B.n}`, bar: [...A.bar, ...extra], body: A.body || B.body, th: Math.max(A.th, B.th),
+        shk: Math.max(A.shk, B.shk), zm: Math.max(A.zm, B.zm), dc: Math.max(A.dc, B.dc), nec: Math.max(A.nec, B.nec),
+      };
+      fuseCache.set(key, d);
+    }
+    return d;
+  }
+
   // ==================================================================== réseau
   function send(obj) {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -163,6 +187,7 @@
       playBtn.disabled = true;
       hud.classList.add('hidden');
       closeTree();
+      closeSuper();
       menu.classList.remove('hidden');
       menuInfo.textContent = '';
       statusEl.textContent = 'Connexion perdue, nouvelle tentative…';
@@ -202,6 +227,7 @@
     mouseDown = rmbDown = spaceDown = shiftDown = false;
     Sfx.death();
     closeTree();
+    closeSuper();
     hud.classList.add('hidden');
     menuInfo.textContent = `Détruit par ${m.k || 'un polygone'} · niveau ${m.l} · score ${m.s}`;
     playBtn.textContent = 'Rejouer';
@@ -223,7 +249,7 @@
     clockOffset = clockOffset === null || d < clockOffset ? d : clockOffset + (d - clockOffset) * 0.01;
 
     const prev = snaps.length ? snaps[snaps.length - 1].ents : null;
-    const me = m.me, mcls = classes[me.c];
+    const me = m.me, mcls = clsOf(me.c, me.c2);
     const bulletIds = new Set();
     let others = 0;
     for (const e of m.e) {
@@ -258,8 +284,11 @@
     meState = me;
     if (pm) {
       if (me.lv > pm.lv) { Sfx.levelUp(); toast(`Niveau ${me.lv}`); }
-      if (me.c !== pm.c) { Sfx.evolve(); toast(`Évolution : ${classes[me.c].n}`); closeTree(); }
+      if (me.c !== pm.c || me.c2 !== pm.c2) { Sfx.evolve(); toast(`Évolution : ${clsOf(me.c, me.c2).n}`); closeTree(); }
+      if (me.fu && !pm.fu) { toast('Niveau 100 ! Choisis une seconde classe à fusionner'); openTree(); Sfx.evolve(); }
+      if (me.tr !== pm.tr) toast(`Palier ${me.tr} · ${TIER_NAMES[me.tr]} : tu affrontes désormais d'autres joueurs`);
       if (me.cc.length && !pm.cc.length) { toast('Évolution disponible ! Choisis ta classe'); openTree(); Sfx.evolve(); }
+      if (me.ss && !pm.ss) { toast('Spécialisation finale disponible !'); openSuper(); Sfx.evolve(); }
     }
     if (m.lb) renderLeaderboard(m.lb, m.ts2);
     updateHud();
@@ -272,6 +301,15 @@
       floaters.push({ x, y, n, recv, life: 0.85, max: 0.85 });
       Sfx.hit(recv ? 0.9 : 0.55);
       if (recv) shake = Math.max(shake, Math.min(12, n * 0.5));
+    } else if (ev[0] === 'k') {                              // une balle a été détruite par une autre
+      const [, x, y] = ev;
+      for (let i = 0; i < 5 && particles.length < 400; i++) {
+        const a = Math.random() * Math.PI * 2, sp = 60 + Math.random() * 120;
+        particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, rot: 0, vr: 8, s: 2 + Math.random() * 3,
+          life: 0.28, max: 0.28, c: Math.random() < 0.5 ? '#ffffff' : '#ffd54a', sq: false });
+      }
+      const vol = Math.max(0, 1 - Math.hypot(x - me.x, y - me.y) / 900);
+      if (vol > 0.05) Sfx.hit(0.22 * vol);
     } else if (ev[0] === 'x') {
       const [, x, y, kind, r, tm] = ev;
       burst(kind, x, y, r, tm);
@@ -292,12 +330,13 @@
     else if (e.code === 'Space') spaceDown = true;
     else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') shiftDown = true;
     else if (e.code === 'KeyT') toggleTree();
-    else if (e.code === 'Escape') closeTree();
+    else if (e.code === 'KeyY') toggleSuper();
+    else if (e.code === 'Escape') { closeTree(); closeSuper(); }
     else if (e.code === 'KeyM') toast(Sfx.toggle() ? 'Son coupé' : 'Son activé');
     else if (e.code === 'KeyC') { send({ t: 'z' }); toast('Rotation automatique'); }
     else {
       const d = /^(?:Digit|Numpad)([1-8])$/.exec(e.code);
-      if (d) send({ t: 's', i: Number(d[1]) - 1 });
+      if (d) { send({ t: 's', i: Number(d[1]) - 1 }); noteChoice(); }
     }
   });
   addEventListener('keyup', (e) => {
@@ -324,8 +363,9 @@
     const k = keyMask();
     const a = Math.round(Math.atan2(mouse.y - H / 2, mouse.x - W / 2) * 100) / 100;
     const d = Math.round(Math.hypot(mouse.x - W / 2, mouse.y - H / 2) / (scale || 1) / 5) * 5;
-    const f = mouseDown || spaceDown ? 1 : 0;
-    const g = rmbDown || shiftDown ? 1 : 0;
+    const busy = uiBusy();
+    const f = !busy && (mouseDown || spaceDown) ? 1 : 0;
+    const g = !busy && (rmbDown || shiftDown) ? 1 : 0;
     const sig = `${k}|${a}|${d}|${f}|${g}`;
     const now = performance.now();
     if (sig !== lastSig || now - lastSent > 250) {
@@ -366,7 +406,7 @@
     const pips = document.createElement('div');
     pips.className = 'pips';
     const pipEls = [];
-    for (let j = 0; j < 10; j++) {
+    for (let j = 0; j < 14; j++) {                  // 10 (Smasher) + 4 crans de super-compétence
       const p = document.createElement('span');
       p.className = 'pip';
       pips.appendChild(p);
@@ -376,37 +416,44 @@
     key.className = 'key';
     key.textContent = String(i + 1);
     row.append(lbl, pips, key);
-    row.addEventListener('click', () => send({ t: 's', i }));
+    row.addEventListener('click', () => { send({ t: 's', i }); noteChoice(); });
     skillsEl.appendChild(row);
-    skillRows.push({ row, pips: pipEls });
+    skillRows.push({ row, pips: pipEls, lbl });
   });
 
   function updateHud() {
     const m = meState;
     if (!m) return;
-    const sig = [m.lv, m.xp, m.pt, m.st.join(), m.mx.join(), m.c, m.cc.join(), m.dr].join('|');
+    const sig = [m.lv, m.xp, m.pt, m.st.join(), m.mx.join(), m.c, m.cc.join(), m.dr, m.sp.join(), m.ss, m.bz, m.c2, m.fu, m.tr].join('|');
     if (sig === hudSig) return;
     hudSig = sig;
 
     const span = m.nx - m.lo;
     xpFill.style.width = `${((span > 0 ? Math.min(1, Math.max(0, (m.xp - m.lo) / span)) : 1) * 100).toFixed(1)}%`;
-    const cd = classes[m.c];
-    levelInfo.textContent = `Niveau ${m.lv} ${cd.n}` + (cd.dc > 0 ? ` · Drones ${m.dr}` : '');
+    const cd = clsOf(m.c, m.c2);
+    levelInfo.textContent = `Niveau ${m.lv} ${cd.n}` + (cd.dc > 0 ? ` · Drones ${m.dr}` : '') + ` · Palier ${m.tr}`;
     scoreText.textContent = `Score : ${m.xp}`;
 
     skillsEl.classList.toggle('has-points', m.pt > 0);
     skillPts.textContent = m.pt > 0 ? `Points disponibles : ${m.pt}` : '';
     skillRows.forEach((r, i) => {
-      const max = m.mx[i];
+      const max = m.mx[i], isSuper = m.sp.includes(i), base = max - (isSuper ? 4 : 0);
       r.pips.forEach((p, j) => {
         p.style.display = j < max ? '' : 'none';
         p.classList.toggle('on', j < m.st[i]);
+        p.classList.toggle('sup', j >= base);          // crans bonus (or)
       });
       r.row.classList.toggle('maxed', m.st[i] >= max);
       r.row.classList.toggle('locked', max === 0);
-      r.row.title = max === 0 ? 'Verrouillé pour cette classe' : '';
+      r.row.classList.toggle('super', isSuper);
+      r.lbl.textContent = STAT_NAMES[i] + (isSuper ? ' ★' : '');
+      r.row.title = max === 0 ? 'Verrouillé pour cette classe' : isSuper ? 'Super-compétence : +4 crans' : '';
     });
     evoBtn.classList.toggle('hidden', !m.cc.length);
+    superBtn.classList.toggle('hidden', !m.ss);
+    busyBadge.classList.toggle('hidden', !m.bz);
+    if (!m.ss) closeSuper();
+    else if (!superPanel.classList.contains('hidden')) refreshSuper();
     if (!treeEl.classList.contains('hidden')) drawTree();
   }
 
@@ -430,6 +477,52 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 2600);
   }
+
+  // ==================================================================== phase de choix (immunité côté serveur)
+  const noteChoice = () => { if (meState && meState.pt > 0) choiceUntil = performance.now() + 1200; };
+  /** vrai tant que le joueur gère ses améliorations : arbre / spécialisation ouverts, panneau survolé, achat récent */
+  const uiBusy = () => playing && (!treeEl.classList.contains('hidden') || !superPanel.classList.contains('hidden')
+    || (overSkills && !!meState && meState.pt > 0) || performance.now() < choiceUntil);
+  $('skillsWrap').addEventListener('mouseenter', () => { overSkills = true; });
+  $('skillsWrap').addEventListener('mouseleave', () => { overSkills = false; });
+  // Ping 5x/s : le serveur accorde l'immunité (0,4 s renouvelée) tant que quelque chose reste à choisir
+  setInterval(() => { if (uiBusy()) send({ t: 'p' }); }, 200);
+
+  // ==================================================================== spécialisation finale (3 super-compétences)
+  const superSel = new Set();
+  const superBtns = STAT_NAMES.map((name, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = `${i + 1}. ${name}`;
+    b.style.setProperty('--c', STAT_COLORS[i]);
+    b.addEventListener('click', () => {
+      if (superSel.has(i)) superSel.delete(i);
+      else if (superSel.size < 3) superSel.add(i);
+      refreshSuper();
+    });
+    superGrid.appendChild(b);
+    return b;
+  });
+  function refreshSuper() {
+    superBtns.forEach((b, i) => {
+      b.classList.toggle('on', superSel.has(i));
+      b.disabled = !meState || meState.mx[i] === 0;   // compétence verrouillée pour cette classe
+    });
+    superCount.textContent = `${superSel.size} / 3 choisies`;
+    superOk.disabled = superSel.size !== 3;
+  }
+  function openSuper() { if (!meState || !meState.ss) return; refreshSuper(); superPanel.classList.remove('hidden'); }
+  function closeSuper() { superPanel.classList.add('hidden'); }
+  function toggleSuper() { if (superPanel.classList.contains('hidden')) openSuper(); else closeSuper(); }
+  superOk.addEventListener('click', () => {
+    if (superSel.size !== 3) return;
+    send({ t: 'x', s: [...superSel] });
+    superSel.clear();
+    closeSuper();
+    toast('Spécialisation enregistrée ★');
+  });
+  $('superClose').addEventListener('click', closeSuper);
+  superBtn.addEventListener('click', openSuper);
 
   // ==================================================================== arbre d'évolution circulaire
   const TREE = { size: 760, bands: [0, 62, 152, 256, 366], nodes: [], hover: -1 };
@@ -481,6 +574,10 @@
     const cur = meState ? meState.c : 0;
     const cc = meState ? meState.cc : [];
     const rel = relatives(cur);
+    const fuse = !!(meState && meState.fu);              // seconde évolution : toutes les classes sont éligibles
+    const c2 = meState ? meState.c2 : -1;
+    treeMsg.textContent = fuse ? 'Niveau 100 : choisis une seconde classe à fusionner avec la tienne (définitif).' : '';
+    treeMsg.classList.toggle('hidden', !fuse);
     tctx.setTransform(1, 0, 0, 1, 0, 0);
     tctx.clearRect(0, 0, S, S);
     tctx.fillStyle = '#f1f1f1';
@@ -489,9 +586,9 @@
 
     TREE.nodes.forEach((n, idx) => {
       const r0 = B[n.tier], r1 = B[n.tier + 1];
-      const isCur = n.id === cur && (n.parent === null || n.parent.id !== cur);
-      const avail = cc.includes(n.id) && n.parent && n.parent.id === cur;
-      const dim = !isCur && !avail && !rel.down.has(n.id) && !rel.up.has(n.id) && n.id !== cur;
+      const isCur = (n.id === cur && (n.parent === null || n.parent.id !== cur)) || n.id === c2;
+      const avail = fuse ? n.tier > 0 && n.id !== cur : !!(cc.includes(n.id) && n.parent && n.parent.id === cur);
+      const dim = !fuse && !isCur && !avail && !rel.down.has(n.id) && !rel.up.has(n.id) && n.id !== cur;
       tctx.globalAlpha = dim ? 0.45 : 1;
       if (n.tier > 0) {
         tctx.beginPath();
@@ -501,7 +598,7 @@
         tctx.fillStyle = n.color;
         tctx.fill();
         tctx.lineWidth = avail || isCur || idx === TREE.hover ? 4 : 1.5;
-        tctx.strokeStyle = avail ? '#ff8a00' : isCur ? '#0085a8' : idx === TREE.hover ? '#222' : '#555';
+        tctx.strokeStyle = avail ? (fuse ? '#9c27b0' : '#ff8a00') : isCur ? '#0085a8' : idx === TREE.hover ? '#222' : '#555';
         tctx.stroke();
       } else {
         tctx.beginPath();
@@ -547,7 +644,7 @@
     if (i < 0) { treeTip.classList.add('hidden'); return; }
     const n = TREE.nodes[i], c = classes[n.id];
     const from = c.from.map((p) => classes[p].n).join(', ');
-    const avail = meState && meState.cc.includes(n.id) && n.parent && n.parent.id === meState.c;
+    const avail = meState && (meState.fu ? n.tier > 0 && n.id !== meState.c : meState.cc.includes(n.id) && n.parent && n.parent.id === meState.c);
     treeTip.innerHTML = '';
     const b = document.createElement('b');
     b.textContent = c.n;
@@ -558,7 +655,7 @@
     treeTip.append(b, lv, ds);
     if (avail) {
       const em = document.createElement('em');
-      em.textContent = 'Clique pour évoluer';
+      em.textContent = meState.fu ? `Clique pour fusionner avec ${classes[meState.c].n}` : 'Clique pour évoluer';
       treeTip.appendChild(em);
     }
     treeTip.classList.remove('hidden');
@@ -568,6 +665,7 @@
     const i = treeHit(ev);
     if (i < 0 || !meState) return;
     const n = TREE.nodes[i];
+    if (meState.fu) { if (n.tier > 0 && n.id !== meState.c) send({ t: 'f', c: n.id }); return; }
     if (meState.cc.includes(n.id) && n.parent && n.parent.id === meState.c) send({ t: 'c', c: n.id });
   });
 
@@ -920,7 +1018,7 @@
   }
 
   function drawTankEntity(t, now) {
-    const cls = classes[t.c] || classes[0];
+    const cls = clsOf(t.c, t.c2);
     const pal = palOf(t);
     let alpha;
     if (t.sh) alpha = 0.55 + 0.25 * Math.sin(now * 0.02);   // protection de spawn clignotante
@@ -929,6 +1027,15 @@
       flash: (flash.get(t.i) || 0) > now, t: now, alpha,
       sp: t.sp || 0, vx: t.vx || 0, vy: t.vy || 0, ta: t.ta, sa: t.sa,
     });
+    if (t.bz) {                                             // bulle d'immunité (phase de choix)
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, t.r * 1.5 + Math.sin(now * 0.006) * 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(120,230,255,0.16)';
+      ctx.fill();
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(120,230,255,0.85)';
+      ctx.stroke();
+    }
     if (t.n) {
       ctx.font = 'bold 18px Ubuntu, "Segoe UI", sans-serif';
       ctx.textAlign = 'center';
@@ -1018,7 +1125,7 @@
     shapes.sort((a, b) => b.r - a.r);                 // Alpha d'abord (dessous)
 
     // Caméra : suit le joueur ; le Predator décale la vue vers le curseur quand on maintient le clic droit
-    const cd = meState ? classes[meState.c] : null;
+    const cd = meState ? clsOf(meState.c, meState.c2) : null;
     const wantZoom = cd && cd.zm && (rmbDown || shiftDown);
     const zt = wantZoom ? Math.min(Math.hypot(mouse.x - W / 2, mouse.y - H / 2) / (scale || 1), 900) * 0.9 : 0;
     zoomOff += (zt - zoomOff) * 0.15;

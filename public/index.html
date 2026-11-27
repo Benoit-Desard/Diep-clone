@@ -30,6 +30,8 @@
     </div>
 
     <button id="evoBtn" class="hidden" type="button">Évolution disponible · T</button>
+    <button id="superBtn" class="hidden" type="button">Spécialisation finale · Y</button>
+    <div id="busyBadge" class="hidden">🛡 Invulnérable pendant ton choix</div>
     <div id="toast" class="hidden"></div>
     <div id="keysHint">T arbre · C rotation auto · M son · clic droit / Maj : drones, pièges, zoom</div>
   </div>
@@ -39,8 +41,21 @@
     <div class="treePanel">
       <button id="treeClose" type="button" aria-label="Fermer">✕</button>
       <h2>Arbre d'évolution</h2>
+      <div id="treeMsg" class="hidden"></div>
       <canvas id="treeCanvas" width="760" height="760"></canvas>
       <div id="treeTip" class="hidden"></div>
+    </div>
+  </div>
+
+  <!-- Spécialisation finale : 3 super-compétences (+4 crans) -->
+  <div id="superPanel" class="hidden">
+    <div class="treePanel superBox">
+      <button id="superClose" type="button" aria-label="Fermer">✕</button>
+      <h2>Spécialisation finale</h2>
+      <p>Choisis <b>3 compétences</b> : leur maximum augmente de <b>4 crans</b>. Choix définitif.</p>
+      <div id="superGrid"></div>
+      <div id="superCount"></div>
+      <button id="superOk" type="button" disabled>Valider</button>
     </div>
   </div>
 

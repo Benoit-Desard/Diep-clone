@@ -16,6 +16,9 @@ use Ratchet\MessageComponentInterface;
  *   {"t":"s","i":3}   améliorer la compétence n°i (0-7)
  *   {"t":"c","c":12}  choisir la classe d'id c
  *   {"t":"z"}         activer/désactiver la rotation automatique
+ *   {"t":"p"}         ping « je choisis une amélioration » (immunité, pas de tir) à renvoyer tant que l'interface est ouverte
+ *   {"t":"x","s":[0,3,6]}  spécialisation finale : 3 compétences à +4 crans
+ *   {"t":"f","c":2}   seconde évolution (niveau 100) : fusionne la classe c avec la sienne
  */
 final class GameServer implements MessageComponentInterface
 {
@@ -68,6 +71,9 @@ final class GameServer implements MessageComponentInterface
             case 's': $engine->upgrade($cid, (int) ($d['i'] ?? -1)); break;
             case 'c': $engine->evolve($cid, (int) ($d['c'] ?? -1)); break;
             case 'z': $engine->toggleSpin($cid); break;
+            case 'p': $engine->busy($cid); break;
+            case 'f': $engine->fuse($cid, (int) ($d['c'] ?? -1)); break;
+            case 'x': $engine->setSupers($cid, is_array($d['s'] ?? null) ? $d['s'] : []); break;
         }
     }
 

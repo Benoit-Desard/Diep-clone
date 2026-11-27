@@ -27,6 +27,13 @@ final class Player
     public int $shield = 0, $lastHitTick = 0, $lastAttacker = 0, $drones = 0, $still = 0;
     /** @var array<int,array> évènements perso (chiffres de dégâts) envoyés au prochain tick */
     public array $ev = [];
+    /** @var int[] les 3 super-compétences choisies (+4 crans max) */
+    public array $supers = [];
+    /** phase de choix (UI ouverte) : immunité totale, aucune attaque */
+    public bool $busy = false, $inFire = false, $inRmb = false;   // inFire/inRmb : entrée brute du client
+    public int $busyUntil = 0, $busyTicks = 0, $busyCool = 0;
+    /** seconde classe fusionnée au niveau 100 (-1 : aucune) et palier de combat (1-3) */
+    public int $cls2 = -1, $tier = 1;
 
     public function __construct(
         public readonly int $cid,
@@ -59,7 +66,12 @@ final class Bullet
 {
     /** @var array<int,int> id de la cible => tick du dernier impact */
     public array $hit = [];
-    public float $a = 0.0, $spin = 0.0, $vmax = 0.0;
+    /** @var array<int,true> balles ennemies déjà percutées (un choc par paire) */
+    public array $clash = [];
+    public float $a = 0.0, $spin = 0.0, $vmax = 0.0, $px = 0.0, $py = 0.0;
+    /** durabilité face aux autres balles (2 x pénétration x robustesse de la classe) et distance parcourue ce tick */
+    public float $hp = 0.0, $seg = 0.0;
+    public int $tier = 0;   // palier du tireur (0 : tourelle de base, interagit avec tout le monde)
 
     public function __construct(
         public int $id,
@@ -75,6 +87,9 @@ final class Bullet
         public float $pen,
         public float $life
     ) {
+        $this->px = $x;
+        $this->py = $y;
+        $this->hp = 2.0 * $pen;
     }
 }
 
@@ -85,6 +100,7 @@ final class Drone
     public int $lastAttacker = 0, $ttl = 0, $kind = 0, $lastHit = 0;
     public bool $au = false;
     public ?object $tg = null;
+    public int $tier = 0;
 
     public function __construct(
         public int $id,
@@ -125,14 +141,27 @@ final class GameEngine
     public const WORLD = 9000;
 
     private const CELL = 256;
-    private const MAX_R = 56;
-    private const MAX_LEVEL = 45;
+    private const MAX_R = 64;
+    private const MAX_LEVEL = 100;
     private const VIEW_W = 1920;
     private const VIEW_H = 1080;
     private const VIEW_MARGIN = 150;
     private const SHIELD_TICKS = 90;
     private const BASE_W = 640;
     private const ALPHA_RESPAWN = 30 * 45;
+    private const SUPER_BONUS = 4;     // crans supplémentaires des 3 super-compétences
+    private const BUSY_KEEP = 12;      // ticks d'immunité renouvelés à chaque ping de l'interface de choix
+    private const BUSY_MAX = 300;      // immunité continue maximale (10 s)
+    private const BUSY_COOL = 150;     // délai avant de pouvoir la réactiver (5 s)
+    private const TIER2_LEVEL = 15;    // niveau du premier palier d'évolution
+    /**
+     * Paliers de combat : 1 = débutants (niv. 1-14), 2 = 1re évolution (niv. 15-99), 3 = niveau 100 + fusion.
+     * Table de compatibilité (qui se voit, se cible et se blesse) : chaque palier liste ceux avec lesquels il interagit.
+     * Elle est symétrique par construction (A voit B seulement si B voit A). Les polygones, Crashers, Alpha et
+     * tourelles de base (palier 0) interagissent avec tout le monde.
+     */
+    private const TIER_LINK = [1 => [1], 2 => [2, 3], 3 => [2, 3]];
+    private const CLASH_K = 0.15;      // durabilité perdue par une balle = dégâts de la balle adverse x CLASH_K
 
     /** hp, rayon, xp, dégâts de contact/tick, résistance infligée aux balles, population cible */
     private const SHAPES = [
@@ -170,6 +199,8 @@ final class GameEngine
     private array $hitShapes = [];
     /** @var array<int,int> population cible de chaque type, proportionnelle à la surface */
     private array $targets = [];
+    /** @var array<int,array<int,bool>> compatibilité de paliers [a][b] */
+    private array $link = [];
     /** @var array<int,array> explosions de la frame */
     private array $fx = [];
     /** @var array<int,array> zones de bases (mode Équipes) */
@@ -190,12 +221,24 @@ final class GameEngine
     {
         $this->teams = $mode === 'teams';
         $this->cols = (int) ceil(self::WORLD / self::CELL);
+        foreach (self::TIER_LINK as $a => $list) {
+            foreach (self::TIER_LINK as $b => $other) {
+                $this->link[$a][$b] = in_array($b, $list, true) && in_array($a, $other, true);
+            }
+        }
         $area = (self::WORLD / 4000) ** 2;           // la densité de polygones reste celle de l'ancienne carte
         foreach ([2, 3, 4, 6] as $type) {
             $this->targets[$type] = (int) round(self::SHAPES[$type]['target'] * $area);
         }
-        for ($l = 2; $l <= self::MAX_LEVEL; $l++) {
+        // Niveaux 2-45 : courbe d'origine. Au-delà, chaque niveau coûte 5,5 % de plus que le précédent :
+        // la progression ralentit sans cesse jusqu'au niveau 100.
+        for ($l = 2; $l <= 45; $l++) {
             $this->xpTable[$l] = (int) floor(8 * ($l - 1) ** 1.8);
+        }
+        $inc = (float) ($this->xpTable[45] - $this->xpTable[44]);
+        for ($l = 46; $l <= self::MAX_LEVEL; $l++) {
+            $inc *= 1.055;
+            $this->xpTable[$l] = $this->xpTable[$l - 1] + (int) round($inc);
         }
         $this->t0 = $this->lastTime = microtime(true);
         if ($this->teams) {
@@ -262,8 +305,8 @@ final class GameEngine
         if (is_int($dist) || is_float($dist)) {
             $p->dist = max(0.0, min(2500.0, (float) $dist));
         }
-        $p->fire = !empty($d['f']);
-        $p->rmb = !empty($d['g']);
+        $p->inFire = !empty($d['f']);
+        $p->inRmb = !empty($d['g']);
     }
 
     public function upgrade(int $cid, int $stat): void
@@ -303,6 +346,94 @@ final class GameEngine
         $this->recalc($p);
     }
 
+    /** Ping de l'interface de choix (arbre, compétences) : immunité tant qu'il y a quelque chose à choisir. */
+    public function busy(int $cid): void
+    {
+        $p = $this->players[$cid] ?? null;
+        if ($p === null || !$p->alive) {
+            return;
+        }
+        if ($p->points < 1 && !$this->choices($p) && !$this->canPickSupers($p) && !$this->canFuse($p)) {
+            return; // rien à choisir : pas d'immunité gratuite
+        }
+        $p->busyUntil = $this->tickNo + self::BUSY_KEEP;
+    }
+
+    /** Spécialisation finale : 3 compétences distinctes gagnent +4 crans maximum (définitif). */
+    public function setSupers(int $cid, array $list): void
+    {
+        $p = $this->players[$cid] ?? null;
+        if ($p === null || !$p->alive || !$this->canPickSupers($p)) {
+            return;
+        }
+        $ids = [];
+        foreach ($list as $v) {
+            if (!is_int($v) || $v < 0 || $v > 7) {
+                return;
+            }
+            $ids[$v] = true;
+        }
+        if (count($ids) !== 3) {
+            return;
+        }
+        foreach (array_keys($ids) as $i) {
+            if ($this->statBase($p, $i) < 1) {
+                return; // compétence verrouillée pour cette classe
+            }
+        }
+        $p->supers = array_keys($ids);
+        sort($p->supers);
+        $this->recalc($p);
+    }
+
+    /** Seconde évolution (niveau 100) : fusionne une 2e classe avec la 1re. Définitif. */
+    public function fuse(int $cid, int $cls2): void
+    {
+        $p = $this->players[$cid] ?? null;
+        if ($p === null || !$p->alive || !$this->canFuse($p) || !ClassTree::has($cls2)
+            || $cls2 === $p->cls || ClassTree::get($cls2)['lv'] < self::TIER2_LEVEL) {
+            return;
+        }
+        $p->cls2 = $cls2;
+        $this->resetBarrels($p);
+        $this->recalc($p);
+        $this->refreshTier($p);
+    }
+
+    private function canFuse(Player $p): bool
+    {
+        return $p->level >= self::MAX_LEVEL && $p->cls2 < 0 && $p->cls !== 0;
+    }
+
+    /** Classe réellement jouée : la 1re, ou la fusion des deux après la seconde évolution. */
+    private function effCls(Player $p): array
+    {
+        return $p->cls2 >= 0 ? ClassTree::fused($p->cls, $p->cls2) : ClassTree::get($p->cls);
+    }
+
+    private function refreshTier(Player $p): void
+    {
+        $p->tier = ($p->level >= self::MAX_LEVEL && $p->cls2 >= 0) ? 3 : ($p->level >= self::TIER2_LEVEL ? 2 : 1);
+    }
+
+    /** Deux paliers peuvent-ils interagir ? (0 = entité neutre : polygones, tourelles de base) */
+    private function linked(int $a, int $b): bool
+    {
+        return $a === 0 || $b === 0 || $this->link[$a][$b];
+    }
+
+    /** Visibilité : on voit les paliers compatibles, et toujours ses coéquipiers (qui ne peuvent pas se blesser). */
+    private function sees(Player $viewer, int $tier, int $team): bool
+    {
+        return $this->linked($viewer->tier, $tier) || ($viewer->team !== 0 && $team === $viewer->team);
+    }
+
+    /** Disponible une seule fois, dès qu'on possède une classe finale (palier 4, niveau 45). */
+    private function canPickSupers(Player $p): bool
+    {
+        return $p->supers === [] && ClassTree::get($p->cls)['lv'] >= 45;
+    }
+
     public function toggleSpin(int $cid): void
     {
         $p = $this->players[$cid] ?? null;
@@ -332,6 +463,7 @@ final class GameEngine
         $this->updateCrashers();
         $this->updateTurrets($dt);
         $this->collideBodies();
+        $this->collideBulletClashes();
         $this->collideBullets();
         $this->resolveDeaths();
         $this->spawnShapes(false);
@@ -350,7 +482,24 @@ final class GameEngine
             if (!$p->alive) {
                 continue;
             }
-            $cls = ClassTree::get($p->cls);
+            $cls = $this->effCls($p);
+            $this->refreshTier($p);
+
+            // Phase de choix : immunité + aucune attaque, limitée (10 s max puis 5 s de recharge) contre les abus
+            $want = $this->tickNo < $p->busyUntil && $p->busyCool <= 0;
+            if ($want && ++$p->busyTicks > self::BUSY_MAX) {
+                $want = false;
+                $p->busyCool = self::BUSY_COOL;
+            }
+            if (!$want) {
+                $p->busyTicks = 0;
+            }
+            if ($p->busyCool > 0) {
+                $p->busyCool--;
+            }
+            $p->busy = $want;
+            $p->fire = $p->inFire && !$want;         // l'entrée brute est conservée : le tir reprend dès la fin du choix
+            $p->rmb = $p->inRmb && !$want;
 
             if ($p->autospin) {
                 $p->angle += 2.2 * $dt;
@@ -413,7 +562,7 @@ final class GameEngine
             if ($k === 'n') {
                 continue;
             }
-            $rel = $base * $bar['rl'];
+            $rel = max(0.034, $base * $bar['rl']);  // au plus un tir par tick et par canon
 
             if ($k === 'a') {                       // tourelle automatique
                 $this->updateAutoTurret($p, $cls, $bar, $i, $rel, $dt);
@@ -481,6 +630,9 @@ final class GameEngine
             $want = atan2($tg->y - $my, $tg->x - $mx);
             $shoot = true;
         }
+        if ($p->busy) {
+            $shoot = false;
+        }
         $diff = fmod($want - $cur + 3 * M_PI, 2 * M_PI) - M_PI;
         $step = 9.0 * $dt;
         $cur += max(-$step, min($step, $diff));
@@ -534,6 +686,8 @@ final class GameEngine
 
             $b = new Bullet($this->nextId++, $p->id, $p->team, $kind, $x, $y, $cos * $spd, $sin * $spd, $r, $dmg, $pen, $life);
             $b->vmax = $vmax;
+            $b->tier = $p->tier;
+            $b->hp = 2.0 * $pen * $cls['bh'] * $bar['bh'];   // robustesse spécifique à la classe (et au canon)
             if ($kind === 1) {
                 $b->a = $a;
                 $b->spin = ($this->rnd() - 0.5) * 2.0;
@@ -573,6 +727,7 @@ final class GameEngine
         $d = new Drone($this->nextId++, $p->id, $p->team,
             $p->x + cos($ang) * $len, $p->y + sin($ang) * $len, cos($ang) * 260.0, sin($ang) * 260.0, $r, $hp, $hp, $dmg, $spd);
         $d->kind = $kind;
+        $d->tier = $p->tier;
         $d->au = (bool) $bar['au'];
         $d->ttl = $ttl;
         $d->a = $ang;
@@ -591,6 +746,7 @@ final class GameEngine
                 unset($this->drones[$id]);
                 continue;
             }
+            $d->tier = $o->tier;                     // un drone suit le palier de son propriétaire
             if ($d->ttl > 0 && --$d->ttl <= 0) {
                 $d->hp = 0.0;                        // expire : retiré dans resolveDeaths
                 continue;
@@ -614,7 +770,7 @@ final class GameEngine
                 $ty = $d->tg !== null ? $d->tg->y : $cy;
             } else {                                 // par défaut : entourer le tank, attaquer à proximité
                 if ($retarget) {
-                    $d->tg = $this->findTarget($d, $o->x, $o->y, 380.0);
+                    $d->tg = $o->busy ? null : $this->findTarget($d, $o->x, $o->y, 380.0);
                 }
                 if ($d->tg !== null) {
                     $tx = $d->tg->x;
@@ -649,10 +805,11 @@ final class GameEngine
             if ($d->kind === 2) {
                 $d->shootCd -= $dt;
                 $tg = $d->tg;
-                if ($tg !== null && $d->shootCd <= 0.0) {
+                if ($tg !== null && $d->shootCd <= 0.0 && !$o->busy) {
                     $ang = atan2($tg->y - $d->y, $tg->x - $d->x);
                     $b = new Bullet($this->nextId++, $d->owner, $d->team, 0, $d->x + cos($ang) * $d->r, $d->y + sin($ang) * $d->r,
                         cos($ang) * 520.0, sin($ang) * 520.0, 6.0, $d->dmg * 9.0, 1.0, 1.1);
+                    $b->tier = $d->tier;
                     $this->bullets[$b->id] = $b;
                     $d->shootCd = 0.7;
                 }
@@ -676,7 +833,7 @@ final class GameEngine
     private function tryInfect(object $m, Shape $sq): bool
     {
         $owner = $m instanceof Player ? $m : ($m instanceof Drone && $m->kind === 1 ? ($this->byId[$m->owner] ?? null) : null);
-        if ($owner === null || !$owner->alive) {
+        if ($owner === null || !$owner->alive || $owner->busy) {
             return false;
         }
         $cls = ClassTree::get($owner->cls);
@@ -687,6 +844,7 @@ final class GameEngine
         $d = new Drone($this->nextId++, $owner->id, $owner->team, $sq->x, $sq->y, 0.0, 0.0, 22.0,
             15.0 + 6.0 * $s[4], 15.0 + 6.0 * $s[4], (0.15 + 0.06 * $s[5]) * $cls['dm'], (150.0 + 25.0 * $s[3]) * $cls['sp']);
         $d->kind = 1;
+        $d->tier = $owner->tier;
         $d->a = $sq->a;
         $d->orb = $this->rnd() * 2 * M_PI;
         $this->drones[$d->id] = $d;
@@ -708,7 +866,7 @@ final class GameEngine
             if (!$p->alive) {
                 continue;
             }
-            $fov = ClassTree::get($p->cls)['fov'];
+            $fov = $this->effCls($p)['fov'];
             $hw = self::VIEW_W / 2 * $fov + self::VIEW_MARGIN + 300;
             $hh = self::VIEW_H / 2 * $fov + self::VIEW_MARGIN + 300;
             $cx0 = max(0, (int) (($p->x - $hw) / self::CELL));
@@ -776,6 +934,8 @@ final class GameEngine
     {
         $lim = self::WORLD + 50;
         foreach ($this->bullets as $id => $b) {
+            $b->px = $b->x;
+            $b->py = $b->y;
             $b->life -= $dt;
             if ($b->kind === 1) {                    // piège : freine jusqu'à l'arrêt
                 $f = exp(-2.2 * $dt);
@@ -789,6 +949,7 @@ final class GameEngine
             }
             $b->x += $b->vx * $dt;
             $b->y += $b->vy * $dt;
+            $b->seg = sqrt($b->vx * $b->vx + $b->vy * $b->vy) * $dt;
             if ($b->life <= 0.0 || $b->x < -50 || $b->y < -50 || $b->x > $lim || $b->y > $lim) {
                 if ($b->kind === 3) {
                     $this->explode($b);
@@ -805,9 +966,10 @@ final class GameEngine
             $a = 2 * M_PI * $i / 16;
             $c = new Bullet($this->nextId++, $b->owner, $b->team, 0, $b->x, $b->y, cos($a) * 380.0, sin($a) * 380.0,
                 max(4.0, $b->r * 0.35), $b->dmg * 0.3, 1.0, 0.6);
+            $c->tier = $b->tier;
             $this->bullets[$c->id] = $c;
         }
-        $this->fx[] = ['x', (int) $b->x, (int) $b->y, 2, 30, $b->team];
+        $this->addFx($b->tier, ['x', (int) $b->x, (int) $b->y, 2, 30, $b->team]);
     }
 
     /** Crashers : patrouillent près du centre, chargent le joueur le plus proche à vue. */
@@ -822,7 +984,7 @@ final class GameEngine
             $best = null;
             $bd = 700.0 * 700.0;
             foreach ($this->query($s->x, $s->y, 700.0, false) as $e) {
-                if (!($e instanceof Player) || $e->stealth) {
+                if (!($e instanceof Player) || $e->stealth || $e->busy) {
                     continue;
                 }
                 $dx = $e->x - $s->x;
@@ -865,7 +1027,7 @@ final class GameEngine
             $best = null;
             $bd = 720.0 * 720.0;
             foreach ($this->query($t->x, $t->y, 720.0, false) as $e) {
-                if (!($e instanceof Player) || $e->stealth || $e->team === $t->team) {
+                if (!($e instanceof Player) || $e->stealth || $e->busy || $e->team === $t->team) {
                     continue;
                 }
                 $dx = $e->x - $t->x;
@@ -952,7 +1114,8 @@ final class GameEngine
         $best = null;
         $bd = PHP_FLOAT_MAX;
         foreach ($this->query($cx, $cy, $range) as $e) {
-            if ($e->hp <= 0.0 || ($e instanceof Player && ($e->stealth || !$e->alive)) || $this->friendly($src, $e)) {
+            if ($e->hp <= 0.0 || ($e instanceof Player && ($e->stealth || $e->busy || !$e->alive)) || $this->friendly($src, $e)
+                || (!($e instanceof Shape) && !$this->linked($src->tier, $e->tier))) {
                 continue;
             }
             $dx = $e->x - $cx;
@@ -972,7 +1135,7 @@ final class GameEngine
         if ($t === null || $t->hp <= 0.0) {
             return false;
         }
-        return !($t instanceof Player) || ($t->alive && !$t->stealth);
+        return !($t instanceof Player) || ($t->alive && !$t->stealth && !$t->busy);
     }
 
     // ================================================================== collisions
@@ -988,6 +1151,19 @@ final class GameEngine
             return true;
         }
         return $a->team !== 0 && $a->team === $b->team;
+    }
+
+    /** Un tank en phase de choix (et ses drones) n'inflige ni ne subit de dégâts de contact. */
+    private function inert(object $e): bool
+    {
+        if ($e instanceof Player) {
+            return $e->busy;
+        }
+        if ($e instanceof Drone) {
+            $o = $this->byId[$e->owner] ?? null;
+            return $o !== null && $o->busy;
+        }
+        return false;
     }
 
     private function invMass(object $e): float
@@ -1020,7 +1196,7 @@ final class GameEngine
 
     private function bodyDamage(Player $p): float
     {
-        return (0.5 + 0.3 * $p->stats[2]) * ClassTree::get($p->cls)['bd']; // par tick de contact
+        return (0.5 + 0.3 * $p->stats[2]) * $this->effCls($p)['bd']; // par tick de contact
     }
 
     private function contactDmg(object $e): float
@@ -1055,7 +1231,7 @@ final class GameEngine
 
     private function hurt(Player $p, float $dmg, ?Player $by): void
     {
-        if ($p->shield > 0) {
+        if ($p->shield > 0 || $p->busy) {
             return;
         }
         $p->hp -= $dmg;
@@ -1086,6 +1262,9 @@ final class GameEngine
                 if ($o === $m || $o->hp <= 0.0) {
                     continue;
                 }
+                if (!($o instanceof Shape) && !$this->linked($m->tier, $o->tier)) {
+                    continue;                        // paliers incompatibles : intangibles, ni poussée ni dégâts
+                }
                 $dx = $o->x - $m->x;
                 $dy = $o->y - $m->y;
                 $rr = $m->r + $o->r;
@@ -1112,11 +1291,86 @@ final class GameEngine
                 $nx = $dx / $d;
                 $ny = $dy / $d;
                 $this->push($m, $o, $nx, $ny, $rr - $d);
-                if ($friendly) {
-                    continue;
+                if ($friendly || $this->inert($m) || $this->inert($o)) {
+                    continue;                        // alliés ou joueur en phase de choix : poussée seulement, aucun dégât
                 }
                 $this->dealDamage($o, $this->contactDmg($m), $this->attrib($m));
                 $this->dealDamage($m, $this->contactDmg($o), $this->attrib($o));
+            }
+        }
+    }
+
+    /**
+     * Balle contre balle : deux projectiles de joueurs (ou équipes) différents se percutent. Chacun perd
+     * (dégâts de l'autre x CLASH_K) de durabilité et disparaît à 0 : un Sniper ou un Destroyer perce les
+     * rafales de Machine Gun, qui s'écrasent sur lui. Les pièges sont des projectiles comme les autres (murs).
+     *
+     * Performance : grille de balles reconstruite à chaque tick, voisinage 3x3, chaque paire testée une seule fois
+     * (id croissant), rejet rapide par distance, puis test exact de la trajectoire du tick (approche minimale de
+     * deux mouvements linéaires) : pas de "tunnel" même entre deux balles de Ranger qui se croisent à 185 px/tick.
+     */
+    private function collideBulletClashes(): void
+    {
+        if (count($this->bullets) < 2) {
+            return;
+        }
+        $last = $this->cols - 1;
+        $bg = [];
+        foreach ($this->bullets as $b) {
+            $bg[$this->cellOf($b->x, $b->y)][] = $b;
+        }
+        $sparks = 0;
+        foreach ($this->bullets as $b) {
+            if ($b->hp <= 0.0) {
+                continue;
+            }
+            $cx = min($last, max(0, (int) ($b->x / self::CELL)));
+            $cy = min($last, max(0, (int) ($b->y / self::CELL)));
+            for ($ny = max(0, $cy - 1); $ny <= min($last, $cy + 1); $ny++) {
+                for ($nx = max(0, $cx - 1); $nx <= min($last, $cx + 1); $nx++) {
+                    foreach ($bg[$ny * $this->cols + $nx] ?? [] as $o) {
+                        if ($o->id <= $b->id || $o->hp <= 0.0 || $b->hp <= 0.0) {
+                            continue;                // chaque paire une seule fois, balles déjà détruites ignorées
+                        }
+                        if ($o->owner === $b->owner || ($b->team !== 0 && $o->team === $b->team) || !$this->linked($b->tier, $o->tier)) {
+                            continue;                // mêmes tireurs / même équipe : elles s'ignorent
+                        }
+                        $dx = $o->x - $b->x;
+                        $dy = $o->y - $b->y;
+                        $reach = $b->r + $o->r + $b->seg + $o->seg;
+                        if ($dx * $dx + $dy * $dy > $reach * $reach || isset($b->clash[$o->id])) {
+                            continue;
+                        }
+                        // approche minimale des deux trajectoires linéaires sur ce tick
+                        $rx = $o->px - $b->px;
+                        $ry = $o->py - $b->py;
+                        $vx = ($o->x - $o->px) - ($b->x - $b->px);
+                        $vy = ($o->y - $o->py) - ($b->y - $b->py);
+                        $v2 = $vx * $vx + $vy * $vy;
+                        $t = $v2 > 1e-6 ? max(0.0, min(1.0, -($rx * $vx + $ry * $vy) / $v2)) : 0.0;
+                        $mx = $rx + $vx * $t;
+                        $my = $ry + $vy * $t;
+                        $rr = $b->r + $o->r;
+                        if ($mx * $mx + $my * $my > $rr * $rr) {
+                            continue;
+                        }
+                        $b->clash[$o->id] = true;
+                        $b->hp -= $o->dmg * self::CLASH_K;
+                        $o->hp -= $b->dmg * self::CLASH_K;
+                        foreach ([$b, $o] as $x) {
+                            if ($x->hp > 0.0) {
+                                continue;
+                            }
+                            if ($x->kind === 3) {
+                                $this->explode($x);  // un feu d'artifice abattu explose quand même
+                            }
+                            unset($this->bullets[$x->id]);
+                            if ($sparks++ < 12) {    // étincelles côté client (plafonnées pour le réseau)
+                                $this->addFx($x->tier, ['k', (int) (($x->x + $x->px) / 2), (int) (($x->y + $x->py) / 2)]);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1125,19 +1379,32 @@ final class GameEngine
     {
         foreach ($this->bullets as $bid => $b) {
             $trap = $b->kind === 1;
-            foreach ($this->query($b->x, $b->y, $b->r) as $t) {
+            $sx = $b->x - $b->px;
+            $sy = $b->y - $b->py;
+            $seg2 = $sx * $sx + $sy * $sy;
+            $seg = sqrt($seg2);
+            // Balayage du segment parcouru ce tick : une balle très rapide ne traverse plus les cibles
+            foreach ($this->query($b->px + $sx / 2, $b->py + $sy / 2, $b->r + $seg / 2) as $t) {
                 if ($t->hp <= 0.0 || $this->ownerOf($t) === $b->owner || ($b->team !== 0 && $t->team === $b->team)) {
                     continue;
                 }
-                if ($t instanceof Player && !$t->alive) {
-                    continue;
+                if (!($t instanceof Shape) && !$this->linked($b->tier, $t->tier)) {
+                    continue;                        // la balle traverse un joueur d'un palier incompatible
+                }
+                if ($t instanceof Player && (!$t->alive || $t->busy)) {
+                    continue;                        // joueur en phase de choix : intouchable
                 }
                 $last = $b->hit[$t->id] ?? -999;
                 if ($trap ? ($last + 12 > $this->tickNo) : ($last !== -999)) {
                     continue;                        // une balle touche une cible une fois ; un piège toutes les 12 ticks
                 }
-                $dx = $t->x - $b->x;
-                $dy = $t->y - $b->y;
+                $u = $seg2 > 0.0001
+                    ? max(0.0, min(1.0, (($t->x - $b->px) * $sx + ($t->y - $b->py) * $sy) / $seg2))
+                    : 1.0;
+                $bx = $b->px + $sx * $u;             // point du segment le plus proche de la cible
+                $by = $b->py + $sy * $u;
+                $dx = $t->x - $bx;
+                $dy = $t->y - $by;
                 $rr = $t->r + $b->r;
                 $d2 = $dx * $dx + $dy * $dy;
                 if ($d2 > $rr * $rr) {
@@ -1167,7 +1434,7 @@ final class GameEngine
                     $t->x += $dx / $d * $ov * 0.5 * min(1.0, $this->invMass($t));
                     $t->y += $dy / $d * $ov * 0.5 * min(1.0, $this->invMass($t));
                 }
-                $this->numEvent($b->owner, $t, $b->x, $b->y, $dmg);
+                $this->numEvent($b->owner, $t, $bx, $by, $dmg);
 
                 $b->pen -= $res;
                 if ($b->pen <= 0.0) {
@@ -1207,7 +1474,7 @@ final class GameEngine
                 if ($k !== null && $k->alive) {
                     $this->addXp($k, self::SHAPES[$s->type]['xp']);
                 }
-                $this->fx[] = ['x', (int) $s->x, (int) $s->y, $s->type, (int) $s->r, 0];
+                $this->addFx(0, ['x', (int) $s->x, (int) $s->y, $s->type, (int) $s->r, 0]);
             }
             if ($s->type === 5) {
                 $this->alpha = null;
@@ -1245,7 +1512,7 @@ final class GameEngine
         $v->alive = false;
         $this->removeDronesOf($v->id);
         unset($this->byId[$v->id]);
-        $this->fx[] = ['x', (int) $v->x, (int) $v->y, 0, (int) $v->r, $v->team];
+        $this->addFx($v->tier, ['x', (int) $v->x, (int) $v->y, 0, (int) $v->r, $v->team]);
         $k = $this->byId[$v->lastAttacker] ?? null;
         if ($k !== null && $k->alive) {
             $this->addXp($k, intdiv($v->xp, 2) + 30);
@@ -1261,29 +1528,45 @@ final class GameEngine
         $p->xp += $xp;
         while ($p->level < self::MAX_LEVEL && $p->xp >= $this->xpTable[$p->level + 1]) {
             $p->level++;
-            $p->points++;
+            $p->points += $this->pointsForLevel($p->level);
         }
         $this->recalc($p);
     }
 
+    /**
+     * Points gagnés en atteignant un niveau : 1 par niveau jusqu'au 100 = 99 points au total.
+     * Maxer les 8 compétences (56) + 3 super-compétences (+12) = 68 ; Auto Smasher (10 partout) = 80 + 12 = 92.
+     */
+    private function pointsForLevel(int $level): int
+    {
+        return 1;
+    }
+
+    /** Maximum de base d'une compétence pour la classe (0 = verrouillée). */
+    private function statBase(Player $p, int $stat): int
+    {
+        $cls = $this->effCls($p);
+        return ($stat >= 3 && $stat <= 6) ? $cls['mxg'] : $cls['mxb'];
+    }
+
+    /** Maximum effectif : base + 4 crans pour les super-compétences choisies. */
     private function statMax(Player $p, int $stat): int
     {
-        $cls = ClassTree::get($p->cls);
-        return ($stat >= 3 && $stat <= 6) ? $cls['mxg'] : $cls['mxb'];
+        return $this->statBase($p, $stat) + (in_array($stat, $p->supers, true) ? self::SUPER_BONUS : 0);
     }
 
     private function recalc(Player $p): void
     {
-        $cls = ClassTree::get($p->cls);
+        $cls = $this->effCls($p);
         $old = $p->maxHp;
         $p->maxHp = (50.0 + 2.0 * ($p->level - 1) + 20.0 * $p->stats[1]) * $cls['hp'];
         $p->hp = min($p->maxHp, $p->hp + max(0.0, $p->maxHp - $old));
-        $p->r = (26.0 + 0.4 * $p->level) * $cls['rad'];
+        $p->r = (26.0 + 0.4 * min($p->level, 45) + 0.1 * max(0, $p->level - 45)) * $cls['rad'];
     }
 
     private function resetBarrels(Player $p): void
     {
-        $n = max(1, count(ClassTree::get($p->cls)['bar']));
+        $n = max(1, count($this->effCls($p)['bar']));
         $p->bcd = array_fill(0, $n, 0.0);
         $p->ta = array_fill(0, $n, $p->angle);
         $p->tt = [];
@@ -1419,7 +1702,8 @@ final class GameEngine
     private function broadcast(float $now): void
     {
         $ts = (int) (($now - $this->t0) * 1000);
-        $lb = ($this->tickNo % 6 === 0) ? $this->leaderboard() : null;
+        $sendLb = $this->tickNo % 6 === 0;
+        $lbCache = [];   // un classement par palier (chacun ne voit que les joueurs compatibles)
         $fx = $this->fx;
         $this->fx = [];
 
@@ -1428,7 +1712,7 @@ final class GameEngine
                 $p->ev = [];
                 continue;
             }
-            $cls = ClassTree::get($p->cls);
+            $cls = $this->effCls($p);
             $fov = $cls['fov'];
 
             // Centre de vue (Predator : le clic droit décale la caméra vers le curseur)
@@ -1455,24 +1739,36 @@ final class GameEngine
                     if ($e->stealth && $e !== $p) {
                         continue;                    // tank furtif : invisible pour les autres
                     }
+                    if ($e !== $p && !$this->sees($p, $e->tier, $e->team)) {
+                        continue;                    // palier incompatible : le tank n'existe pas pour ce joueur
+                    }
                     $en = [
                         'i' => $e->id, 't' => 0, 'x' => (int) round($e->x), 'y' => (int) round($e->y),
                         'a' => round($e->angle, 2), 'hp' => (int) round($e->hp / $e->maxHp * 100),
                         'r' => round($e->r, 1), 'c' => $e->cls, 'n' => $e->name, 'l' => $e->level, 'tm' => $e->team,
                     ];
+                    if ($e->cls2 >= 0) {
+                        $en['c2'] = $e->cls2;        // seconde classe fusionnée (rendu des canons)
+                    }
                     if ($e->shield > 0) {
                         $en['sh'] = 1;
+                    }
+                    if ($e->busy) {
+                        $en['bz'] = 1;               // bulle d'immunité (phase de choix)
                     }
                     if ($e->stealth) {
                         $en['sl'] = 1;               // le joueur furtif se voit lui-même en transparence
                     }
-                    $ecls = ClassTree::get($e->cls);
+                    $ecls = $this->effCls($e);
                     if ($ecls['tsp'] > 0.0 || $this->hasAuto($ecls)) {
                         $en['ta'] = array_map(static fn (float $v): float => round($v, 2), $e->ta);
                         $en['sa'] = round($e->spinA, 2);
                     }
                     $ents[] = $en;
                 } elseif ($e instanceof Drone) {
+                    if (!$this->sees($p, $e->tier, $e->team)) {
+                        continue;
+                    }
                     $ents[] = [
                         'i' => $e->id, 't' => 8, 'x' => (int) round($e->x), 'y' => (int) round($e->y), 'a' => round($e->a, 2),
                         'hp' => (int) round($e->hp / $e->maxHp * 100), 'r' => round($e->r, 1), 'o' => $e->owner,
@@ -1491,7 +1787,7 @@ final class GameEngine
                 }
             }
             foreach ($this->bullets as $b) {
-                if ($b->x >= $x0 && $b->x <= $x1 && $b->y >= $y0 && $b->y <= $y1) {
+                if ($b->x >= $x0 && $b->x <= $x1 && $b->y >= $y0 && $b->y <= $y1 && $this->sees($p, $b->tier, $b->team)) {
                     $en = [
                         'i' => $b->id, 't' => $b->kind === 0 ? 1 : ($b->kind === 1 ? 9 : 10),
                         'x' => (int) round($b->x), 'y' => (int) round($b->y), 'r' => round($b->r, 1),
@@ -1513,7 +1809,7 @@ final class GameEngine
 
             $mx = [];
             for ($i = 0; $i < 8; $i++) {
-                $mx[] = ($i >= 3 && $i <= 6) ? $cls['mxg'] : $cls['mxb'];
+                $mx[] = $this->statMax($p, $i);
             }
             $msg = [
                 't' => 'u', 'ts' => $ts, 'e' => $ents,
@@ -1523,20 +1819,23 @@ final class GameEngine
                     'nx' => $this->xpTable[$p->level + 1] ?? $this->xpTable[$p->level],
                     'lv' => $p->level, 'pt' => $p->points, 'st' => $p->stats, 'mx' => $mx,
                     'c' => $p->cls, 'cc' => $this->choices($p), 'fv' => $fov, 'dr' => $p->drones,
+                    'sp' => $p->supers, 'ss' => $this->canPickSupers($p) ? 1 : 0, 'bz' => $p->busy ? 1 : 0,
+                    'c2' => $p->cls2, 'fu' => $this->canFuse($p) ? 1 : 0, 'tr' => $p->tier,
                 ],
             ];
 
             $evs = $p->ev;
             $p->ev = [];
-            foreach ($fx as $f) {
-                if ($f[1] >= $x0 && $f[1] <= $x1 && $f[2] >= $y0 && $f[2] <= $y1) {
+            foreach ($fx as [$ft, $f]) {
+                if ($this->linked($p->tier, $ft) && $f[1] >= $x0 && $f[1] <= $x1 && $f[2] >= $y0 && $f[2] <= $y1) {
                     $evs[] = $f;
                 }
             }
             if ($evs) {
                 $msg['ev'] = $evs;
             }
-            if ($lb !== null) {
+            if ($sendLb) {
+                $lb = $lbCache[$p->tier] ??= $this->leaderboard($p->tier);
                 $msg['lb'] = $lb['top'];
                 if ($lb['teams'] !== null) {
                     $msg['ts2'] = $lb['teams'];
@@ -1569,9 +1868,9 @@ final class GameEngine
     }
 
     /** @return array{top:array,teams:?array} */
-    private function leaderboard(): array
+    private function leaderboard(int $viewerTier): array
     {
-        $alive = array_filter($this->players, static fn (Player $p): bool => $p->alive);
+        $alive = array_filter($this->players, fn (Player $p): bool => $p->alive && $this->linked($viewerTier, $p->tier));
         usort($alive, static fn (Player $a, Player $b): int => $b->xp <=> $a->xp);
         $top = array_map(
             static fn (Player $p): array => [$p->name, $p->xp, $p->id, $p->team],
@@ -1585,6 +1884,12 @@ final class GameEngine
             }
         }
         return ['top' => $top, 'teams' => $teams];
+    }
+
+    /** Évènement visuel (explosion, étincelles) visible seulement des paliers compatibles avec $tier. */
+    private function addFx(int $tier, array $ev): void
+    {
+        $this->fx[] = [$tier, $ev];
     }
 
     private function rnd(): float
